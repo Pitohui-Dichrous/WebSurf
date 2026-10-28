@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="same-origin">
+<title>WebSurf 视频测试</title>
+<style>
+:root{font-family:system-ui,sans-serif;color:#272637;background:#f7f8f5;color-scheme:light}
+*{box-sizing:border-box}body{max-width:720px;margin:0 auto;padding:16px}h1{font-size:20px;margin:4px 0 12px}h2{font-size:16px;margin:24px 0 8px}p{font-size:14px;line-height:1.5;color:#62666b}label{display:block;font-size:14px;margin:12px 0 6px}select,input,button{font:inherit;font-size:14px;min-height:48px;border:1px solid #dce1da;border-radius:8px;padding:8px 12px;color:inherit;background:#edf0eb}input{width:100%;background:white}button{cursor:pointer}button:active{background:#e8f0e9}.actions{display:flex;gap:8px;flex-wrap:wrap}.actions button{flex:1}video{width:100%;display:block;background:#201d2c;border-radius:8px;aspect-ratio:16/9}.primary{color:white;background:#145f39}dl{display:grid;grid-template-columns:100px 1fr;font-size:12px;gap:8px}dt,dd{margin:0;overflow-wrap:anywhere}.status{padding:12px;background:#edf0eb;border-radius:8px}#events{font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere}img{max-width:160px;border-radius:8px}audio{width:100%}.gap{height:220px}
+</style>
+<h1>视频测试</h1>
+<div class="status"><dl><dt>页面加载次数</dt><dd id="load-count"></dd><dt>页面实例</dt><dd id="instance"></dd><dt>当前播放</dt><dd id="current"></dd><dt>播放时间</dt><dd id="time">0.00s</dd><dt>页面运行</dt><dd id="alive">0s</dd></dl></div>
+<label for="note">保留内容测试</label><input id="note" autocomplete="off" placeholder="输入内容，再关闭小窗；内容应保留">
+<label for="quality">清晰度和格式</label>
+<select id="quality">
+<option value="mp4-360">MP4 · 360p</option><option value="mp4-720">MP4 · 720p</option>
+<option value="hls-360">HLS · 360p</option><option value="hls-720">HLS · 720p</option>
+<option value="hls-master">HLS · 自动清晰度</option><option value="hls-aes">HLS · AES-128</option>
+</select>
+<p>先播放 360p，关闭接管后选择 720p。输入内容、页面实例和加载次数应保持不变。</p>
+<video id="video" controls playsinline preload="metadata" poster="/public/cover.png"></video>
+<div class="actions"><button class="primary" id="play">播放</button><button id="pause">暂停</button><button id="seek">跳到 3 秒</button></div>
+<p id="play-status">就绪</p>
+<h2>链接检测</h2>
+<div class="actions"><button id="probe-master">探测 HLS 主列表</button><button id="probe-aes">探测 AES 列表</button></div>
+<p><a href="/protected/sample-720.mp4?download=1" download="WebSurf-720p.mp4">直接下载 MP4</a> · <a href="/protected/hls/master.m3u8">HLS 主列表</a> · <a href="/protected/encrypted/index.m3u8">AES-128 列表</a></p>
+<h2>图片与纯音频</h2>
+<p>以下资源用于检查图片和纯音频是否被误识别成视频。</p><img src="/public/cover.png" alt="测试图片"><audio id="audio" controls preload="metadata" src="/protected/audio-only.m4a"></audio>
+<div class="gap"></div>
+<label for="bottom-note">滚动位置测试</label><input id="bottom-note" autocomplete="off" placeholder="保持此处滚动位置">
+<h2>播放事件</h2><pre id="events"></pre>
+<script>
+(()=>{
+ const count=Number(sessionStorage.getItem('fixture.loads')||0)+1;
+ sessionStorage.setItem('fixture.loads',String(count));
+ const instance=Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,7);
+ const started=performance.now(), video=document.getElementById('video'), choice=document.getElementById('quality');
+ const urls={ 'mp4-360':'/protected/sample-360.mp4?quality=360', 'mp4-720':'/protected/sample-720.mp4?quality=720', 'hls-360':'/protected/hls/renditions/360/index.m3u8?quality=360', 'hls-720':'/protected/hls/renditions/720/index.m3u8?quality=720', 'hls-master':'/protected/hls/master.m3u8', 'hls-aes':'/protected/encrypted/index.m3u8' };
+ window.__fixture={instance,loadCount:count,quality:'mp4-360',events:[],playRequests:0};
+ document.getElementById('load-count').textContent=count;
+ document.getElementById('instance').textContent=instance;
+ function event(name){let f=window.__fixture;f.events.push(name+' '+video.currentTime.toFixed(2)+'s');document.getElementById('events').textContent=f.events.slice(-10).join('\n')}
+ function source(){window.__fixture.quality=choice.value;video.src=urls[choice.value];document.getElementById('current').textContent=choice.options[choice.selectedIndex].text;video.load();event('source '+choice.value)}
+ async function play(){window.__fixture.playRequests++;try{await video.play();document.getElementById('play-status').textContent='播放中'}catch(e){document.getElementById('play-status').textContent=e.name+': '+e.message}}
+ choice.addEventListener('change',()=>{const t=video.currentTime;source();video.addEventListener('loadedmetadata',()=>{video.currentTime=Math.min(t,Math.max(0,video.duration-0.1))},{once:true})});
+ document.getElementById('play').onclick=play;
+ document.getElementById('pause').onclick=()=>video.pause();
+ document.getElementById('seek').onclick=()=>{video.currentTime=3};
+ document.getElementById('probe-master').onclick=()=>fetch(urls['hls-master'],{credentials:'same-origin'}).then(r=>r.text()).then(t=>event('master '+t.slice(0,7)));
+ document.getElementById('probe-aes').onclick=()=>fetch(urls['hls-aes'],{credentials:'same-origin'}).then(r=>r.text()).then(t=>event('AES '+t.slice(0,7)));
+ for(const name of ['play','playing','pause','ended','loadedmetadata','error'])video.addEventListener(name,()=>event(name));
+ setInterval(()=>{document.getElementById('time').textContent=video.currentTime.toFixed(2)+'s';document.getElementById('alive').textContent=((performance.now()-started)/1000).toFixed(1)+'s'},200);
+ source();
+})();
+</script>
+</html>

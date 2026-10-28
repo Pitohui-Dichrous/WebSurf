@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>WebSurf 同视频画质切换测试</title>
+<style>
+*{box-sizing:border-box}body{margin:0;padding:20px;font:16px system-ui;background:#f7f8f5;color:#272637}
+h1{font-size:20px}video{display:block;width:100%;aspect-ratio:16/9;background:#171717}
+input,button{font:inherit;min-height:48px;margin:12px 0;padding:8px 12px}input{width:100%}
+</style>
+<h1>同一视频的 360p 与 720p</h1>
+<input id="note" placeholder="切换画质时保留网页输入">
+<video id="video" controls playsinline preload="metadata" poster="/public/cover.png">
+  <source src="/public/sample-360.mp4?declared-quality=360" type="video/mp4" label="360p">
+  <source src="/public/sample-720.mp4?declared-quality=720" type="video/mp4" label="720p">
+</video>
+<button id="play">网页播放</button>
+<p>重新加载网页后，默认源仍是 360p。</p>
+<script>
+const loads=Number(sessionStorage.getItem('quality.loads')||0)+1;
+sessionStorage.setItem('quality.loads',String(loads));
+window.__qualityFixture={instance:Date.now().toString(36)+'-'+Math.random().toString(36).slice(2),loads};
+document.getElementById('play').onclick=()=>document.getElementById('video').play();
+</script>
+</html>

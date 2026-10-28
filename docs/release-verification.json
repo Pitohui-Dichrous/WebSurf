@@ -1,0 +1,14 @@
+{
+  "version": "0.4.0",
+  "date": "2026-10-29",
+  "java_tests": 30,
+  "javascript_tests": 61,
+  "android_tests": 37,
+  "lint_errors": 0,
+  "lint_warnings": 20,
+  "device": "Android 14 / API 34 emulator; Chromium WebView 113.0.5672.136",
+  "release_signature": "verified; same signing certificate as 0.3.0",
+  "upgrade_install": "passed from 0.3.0 to 0.4.0",
+  "scope": "Runtime tests used the matching debug source and synthetic local media fixtures, including HLS download and MP4 playback. Website compatibility and long-term performance are not established by these tests.",
+  "apk_sha256": "ba9e113bd401949eb4740cd60864878934c3a07017b0e712ea94ccc83ab07af6"
+}

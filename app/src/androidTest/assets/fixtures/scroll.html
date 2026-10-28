@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>WebSurf 原位滚动测试</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f5f6f2;color:#222;font:16px system-ui,sans-serif}
+header{height:180px;padding:24px 28px;background:linear-gradient(#e5f1e7,#f5f6f2)}
+h1{font-size:20px;margin:0 0 16px}p{line-height:1.6;margin:0}
+video{display:block;width:calc(100% - 56px);aspect-ratio:16/9;margin:0 28px;background:#111}
+main{padding:24px 28px;height:5400px;background:repeating-linear-gradient(#f5f6f2 0 280px,#e4eadf 280px 560px)}
+</style>
+<header><h1>原位播放与页面滚动</h1><p>从视频画面向上滑动，视频跟随页面并保持在上方；向下滑动后恢复原位。</p></header>
+<video id="video" controls playsinline loop preload="metadata" src="/public/sample-360.mp4?scroll=360" poster="/public/cover.png"></video>
+<main><p>此页保留足够滚动空间，用于验证松手后的惯性以及吸顶边界。</p></main>
+<script>
+window.__scrollFixture={instance:Date.now().toString(36),scrollEvents:0};
+addEventListener('scroll',()=>window.__scrollFixture.scrollEvents++,{passive:true});
+</script>
+</html>

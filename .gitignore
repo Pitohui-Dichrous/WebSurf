@@ -1,0 +1,15 @@
+.gradle/
+.tools/
+local.properties
+**/build/
+dist/
+base.apk
+analysis/
+*.jks
+*.keystore
+__pycache__/
+*.pyc
+*.log
+/docs/*
+!/docs/USAGE.md
+!/docs/release-verification.json

@@ -1,0 +1,19 @@
+* text=auto eol=lf
+*.md text eol=lf
+*.java text eol=lf
+*.js text eol=lf
+*.mjs text eol=lf
+*.py text eol=lf
+*.xml text eol=lf
+*.gradle text eol=lf
+*.properties text eol=lf
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+gradlew text eol=lf
+*.jpg binary
+*.png binary
+*.jar binary
+*.mp4 binary
+*.m4a binary
+*.ts binary
+*.key binary

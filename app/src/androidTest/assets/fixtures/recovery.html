@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>WebSurf 网页播放恢复测试</title>
+<style>
+*{box-sizing:border-box}body{margin:0;padding:20px;background:#f7f8f5;color:#272637;font:16px system-ui,sans-serif}
+h1{font-size:20px;margin:0 0 16px}video{display:block;width:100%;aspect-ratio:16/9;background:#111;border-radius:8px}
+button,input{font:inherit;min-height:48px;border:1px solid #dce1da;border-radius:8px;padding:8px 14px;background:#edf0eb;color:#272637}
+input{width:100%;margin-bottom:16px}button{margin-top:12px}p{font-size:14px;line-height:1.5}pre{font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere}
+</style>
+<h1>网页播放恢复</h1>
+<input id="note" placeholder="保留输入内容">
+<video id="video" controls playsinline preload="metadata"></video>
+<button id="play">播放片前视频</button>
+<p>此媒体允许网页解码器播放，独立原生请求返回 403；恢复网页后可由网页切换到正片。</p>
+<pre id="events"></pre>
+<script>
+(()=>{
+ const video=document.getElementById('video');
+ const run=new URL(location.href).searchParams.get('run')||Date.now().toString(36);
+ const loads=Number(sessionStorage.getItem('fixture.recovery.loads')||0)+1;
+ sessionStorage.setItem('fixture.recovery.loads',String(loads));
+ const f=window.__recovery={instance:Date.now().toString(36)+'-'+Math.random().toString(36).slice(2),loadCount:loads,
+   run,errors:0,loadCalls:0,loadStarts:0,playRequests:0,ended:0,advanceAfterAd:false,phase:'ad',events:[]};
+ const nativeLoad=video.load;
+ video.load=function(){f.loadCalls++;return nativeLoad.call(this)};
+ const record=name=>{f.events.push(name);document.getElementById('events').textContent=f.events.slice(-24).join('\n')};
+ for(const name of ['play','playing','pause','ended','error','loadedmetadata','loadstart'])video.addEventListener(name,()=>{
+   record(name+' '+video.currentTime.toFixed(2));
+   if(name==='error')f.errors++;
+   if(name==='loadstart')f.loadStarts++;
+ });
+ const source=(path,phase)=>{f.phase=phase;video.src=path+'?recovery='+encodeURIComponent(run);video.load()};
+ const play=()=>{f.playRequests++;const result=video.play();if(result&&result.catch)result.catch(e=>record('play rejected '+e.name))};
+ document.getElementById('play').onclick=play;
+ f.advance=()=>{source('/public/sample-720.mp4','main');play()};
+ f.usePublic=()=>source('/public/sample-360.mp4','safe');
+ video.addEventListener('ended',()=>{f.ended++;if(f.phase==='ad'&&f.advanceAfterAd)f.advance()});
+ source('/browser-only/sample-360.mp4','ad');
+})();
+</script>
+</html>

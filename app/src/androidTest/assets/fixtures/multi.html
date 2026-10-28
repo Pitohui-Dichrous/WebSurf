@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="same-origin">
+<title>WebSurf 多视频测试</title>
+<style>
+:root{font-family:system-ui,sans-serif;color:#272637;background:#f7f8f5;color-scheme:light}
+*{box-sizing:border-box}body{max-width:720px;margin:0 auto;padding:16px}h1{font-size:20px;margin:4px 0 12px}h2{font-size:16px;margin:20px 0 8px}p{font-size:13px;color:#62666b;line-height:1.5}video{width:100%;display:block;background:#201d2c;border-radius:8px;aspect-ratio:16/9}button,input,select{font:inherit;font-size:14px;min-height:48px;border:1px solid #dce1da;border-radius:8px;padding:8px 12px;color:inherit;background:#edf0eb}input{width:100%;background:white}button{cursor:pointer}button.primary{color:white;background:#145f39}.actions{display:flex;gap:8px;margin-top:8px}.actions button{flex:1}.advert{display:flex;gap:12px;align-items:center;padding:8px;background:#edf0eb;border-radius:8px}.advert video{width:144px;height:81px}#late-ad{width:96px;height:54px}.spacer{height:320px}pre{font-size:12px;white-space:pre-wrap}
+</style>
+<h1>多视频测试</h1>
+<div class="advert"><video id="ad" muted autoplay loop playsinline src="/protected/sample-360.mp4?slot=independent-ad"></video><p>自动播放广告<br>不应抢占主视频</p></div>
+<h2>主视频</h2>
+<input id="note" autocomplete="off" placeholder="关闭接管后保留内容">
+<p>原位接管、关闭后切换清晰度、立即重新接管。</p>
+<video id="video" controls playsinline preload="metadata" poster="/public/cover.png" src="/protected/sample-360.mp4?slot=main&amp;quality=360"></video>
+<div class="actions"><button id="play-main" class="primary">播放主视频</button><select id="quality"><option value="360">360p</option><option value="720">720p</option></select></div>
+<h2>后加载的广告</h2>
+<video id="late-ad" muted loop playsinline preload="none" src="/protected/sample-360.mp4?slot=late-ad"></video>
+<h2>第二个视频</h2>
+<video id="other" controls playsinline preload="metadata" src="/protected/sample-720.mp4?slot=other"></video>
+<div class="actions"><button id="play-other" class="primary">播放第二个视频</button></div>
+<h2>片前广告 → 正片</h2>
+<video id="preroll" controls playsinline preload="metadata" src="/protected/sample-360.mp4?slot=preroll"></video>
+<div class="actions"><button id="play-preroll" class="primary">播放片前广告</button></div>
+<p>同一 video 元素在 ended 时切换 720p 正片，没有第二次用户点击。</p>
+<pre id="events"></pre><div class="spacer"></div>
+<script>
+(()=>{
+const count=Number(sessionStorage.getItem('fixture.multi.loads')||0)+1;
+sessionStorage.setItem('fixture.multi.loads',String(count));
+const f=window.__fixture={instance:Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,7),loadCount:count,playRequests:0,mainRequests:0,otherRequests:0,prerollRequests:0,prerollEnded:0,events:[],trustedClicks:0};
+const main=document.getElementById('video'),other=document.getElementById('other'),preroll=document.getElementById('preroll');
+const event=name=>{f.events.push(name);document.getElementById('events').textContent=f.events.slice(-12).join('\n')};
+const play=async(video,name)=>{f.playRequests++;try{await video.play();event(name+' playing')}catch(e){event(name+' '+e.name)}};
+document.getElementById('play-main').onclick=e=>{f.mainRequests++;if(e.isTrusted)f.trustedClicks++;play(main,'main')};
+document.getElementById('play-other').onclick=e=>{f.otherRequests++;if(e.isTrusted)f.trustedClicks++;play(other,'other')};
+document.getElementById('play-preroll').onclick=e=>{f.prerollRequests++;if(e.isTrusted)f.trustedClicks++;play(preroll,'preroll')};
+document.getElementById('quality').onchange=e=>{main.src='/protected/sample-'+e.target.value+'.mp4?slot=main&quality='+e.target.value;main.load();event('quality '+e.target.value)};
+preroll.addEventListener('ended',()=>{if(f.prerollEnded++)return;event('preroll ended');preroll.src='/protected/sample-720.mp4?slot=main-after-preroll';preroll.load();play(preroll,'main-after-preroll')});
+for(const id of ['ad','video','late-ad','other','preroll'])for(const name of ['play','pause','ended','loadedmetadata','error'])document.getElementById(id).addEventListener(name,()=>event(id+' '+name));
+f.startLateAd=()=>play(document.getElementById('late-ad'),'late-ad');
+})();
+</script></html>
