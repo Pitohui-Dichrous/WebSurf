@@ -1,0 +1,166 @@
+{
+  "repository": "https://github.com/lucide-icons/lucide",
+  "commit": "be09619c1c1124ad09c19fc3e87ee3b939409bbd",
+  "license": "ISC and Feather-derived MIT; full LICENSE included",
+  "icons": [
+    {
+      "file": "check.svg",
+      "sha256": "7f33acc9a77a61659531044525fc008edebe215bf4dcf1c789c8674ad3277db0"
+    },
+    {
+      "file": "chevron-left.svg",
+      "sha256": "83b0681aa38bf55e9d52a1e4b4cced624abe1fe7678ecafda133a574f1161d93"
+    },
+    {
+      "file": "chevron-right.svg",
+      "sha256": "2758143d7b2434e4aa7307dfd34405c87909ff4052f21b5f3f40d45224b4f19b"
+    },
+    {
+      "file": "circle-alert.svg",
+      "sha256": "ce3e98b7a03b78c0071131df42466e4e1ff5187fccad30e739ec9ce951cf685a"
+    },
+    {
+      "file": "copy.svg",
+      "sha256": "ea80e566c7a12628a447cb53179b19aea4f60b9143e2becd0d0f20bf260e5718"
+    },
+    {
+      "file": "download.svg",
+      "sha256": "3daeee13ded5a3afa2198b1bb4e2262d163922f97d96ac6ff9953e8ed4fe039d"
+    },
+    {
+      "file": "ellipsis.svg",
+      "sha256": "4f495cc72013ffdfec677f03b33a150f7b4dd741979283fd6853a09024bca112"
+    },
+    {
+      "file": "file.svg",
+      "sha256": "499039795d7412d67664ff79d2eb6b7412e746b24c18c8fd8aba383c24ddada0"
+    },
+    {
+      "file": "folder-open.svg",
+      "sha256": "ee57452b40e71df310214091dd9da1941a397c83197b8ff8d7ae66dd4242578b"
+    },
+    {
+      "file": "globe.svg",
+      "sha256": "82c6b8fa0b8e8d775ec9becd86f74a4e50bff7bee4c81f7362de45348504f14d"
+    },
+    {
+      "file": "house.svg",
+      "sha256": "28216c479005731ef5e382e7d8627eda2b129b019eb1f3d9de9f5915576d448e"
+    },
+    {
+      "file": "info.svg",
+      "sha256": "bc977a64eb96f3e9c1041ffd09a3fceb70e3e65c02b571f76064062ed31f3cb9"
+    },
+    {
+      "file": "link.svg",
+      "sha256": "4f3237183dcaabfac92f4e94c776a9a9e45c3c5e77a921061a6b34b61eb5413f"
+    },
+    {
+      "file": "lock-keyhole.svg",
+      "sha256": "fc0b8b7590d1d9e9bb0112c5c2e15a78ade0bfeca6d6f8c79fbbe149236d74be"
+    },
+    {
+      "file": "lock-keyhole-open.svg",
+      "sha256": "9dbc41c9cd23e3bad8f3edb885e91d0ed514619ef632a2c5cd8a2e21ec37be35"
+    },
+    {
+      "file": "maximize.svg",
+      "sha256": "1f790856b0de805ab62e871609f1990b89d227d472022e57a11fde015aad4826"
+    },
+    {
+      "file": "minimize.svg",
+      "sha256": "7daa304bc3dccac1f100304e66a41139662cc6c0ba3eba67480d97466a9ce02b"
+    },
+    {
+      "file": "pause.svg",
+      "sha256": "f122ec4ea7f5693a0b1baafa9c708b53980dc87b4aacb297c6e6f71c1a4c115c"
+    },
+    {
+      "file": "picture-in-picture.svg",
+      "sha256": "ce3d4ae11094be2346002668be3f1998b03e0035e7e9f9a72b710b25d12418f4"
+    },
+    {
+      "file": "picture-in-picture-2.svg",
+      "sha256": "eccce9ef362520bbb8904fbc1fc89f5d02fb0fbb7c6704cdd3b761dd4fc102b0"
+    },
+    {
+      "file": "play.svg",
+      "sha256": "d7c34786135922a92b6896f6c2384ceeb0346afbf6041dc79982011411409833"
+    },
+    {
+      "file": "plus.svg",
+      "sha256": "7f6af73bf1ff6c4bca3f18351c8d1bdec6749c0c2530c4de5da85d520c21df17"
+    },
+    {
+      "file": "rotate-cw.svg",
+      "sha256": "ddcfe6d87240475946935e77411cd4d15a06f3d28a9b921bafed224ebe953668"
+    },
+    {
+      "file": "search.svg",
+      "sha256": "283d371c2e433817bb9c0c8310caa6c77fa4177c0f4f1168d9c83b97af7389dc"
+    },
+    {
+      "file": "settings.svg",
+      "sha256": "0ae27fd0f81999229e3127ac96c5b32edfea448e291d509e76212b917551d66b"
+    },
+    {
+      "file": "share-2.svg",
+      "sha256": "de283acf45610a564ade56bc55bb94e7cf4040bc942efe9163fd98cdfe07672c"
+    },
+    {
+      "file": "square-play.svg",
+      "sha256": "8a037501b1f41fb1b537daf5ded19a7e439e7aeef1492fbcf89a339ed541056d"
+    },
+    {
+      "file": "trash.svg",
+      "sha256": "27299f69ad7c6272be64b1b8e2d48cbd6dcf0ef0d4f92827a1affa945c91700e"
+    },
+    {
+      "file": "volume-2.svg",
+      "sha256": "fb404f9c128a0579de67b399177631e5edb3502fdc247ceb30e8b15754b46071"
+    },
+    {
+      "file": "volume-x.svg",
+      "sha256": "f382e421b7aae01172989f2b749ee87e44c0c82c16970b13a9ad5a323b613be0"
+    },
+    {
+      "file": "x.svg",
+      "sha256": "4a9cdab38fbb96162e7dace28e33f4ca0e49d8963a6162abc3d4691b7d675117"
+    }
+  ],
+  "aliases": {
+    "back": "chevron-left",
+    "forward": "chevron-right",
+    "home": "house",
+    "refresh": "rotate-cw",
+    "close": "x",
+    "more": "ellipsis",
+    "download": "download",
+    "video": "square-play",
+    "play": "play",
+    "pause": "pause",
+    "tabs": "copy",
+    "settings": "settings",
+    "add": "plus",
+    "link": "link",
+    "check": "check",
+    "share": "share-2",
+    "expand": "maximize",
+    "minimize": "minimize",
+    "globe": "globe",
+    "float": "picture-in-picture-2",
+    "inline": "picture-in-picture",
+    "volume": "volume-2",
+    "muted": "volume-x",
+    "lock": "lock-keyhole",
+    "unlock": "lock-keyhole-open",
+    "retry": "rotate-cw",
+    "copy": "copy",
+    "trash": "trash",
+    "file": "file",
+    "info": "info",
+    "folder": "folder-open",
+    "search": "search",
+    "alert": "circle-alert"
+  }
+}

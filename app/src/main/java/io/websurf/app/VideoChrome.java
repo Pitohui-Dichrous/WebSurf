@@ -6,15 +6,8 @@ import android.app.AlertDialog;
 import android.content.Context;
 import android.content.ContextWrapper;
 import android.content.res.ColorStateList;
-import android.graphics.Canvas;
 import android.graphics.Color;
-import android.graphics.ColorFilter;
-import android.graphics.Paint;
-import android.graphics.Path;
-import android.graphics.PixelFormat;
-import android.graphics.RectF;
 import android.graphics.Typeface;
-import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
 import android.media.AudioManager;
@@ -68,8 +61,6 @@ public final class VideoChrome extends FrameLayout {
 
     void onSelectSource();
 
-    default void onSelectQuality() {}
-
     void onDrag(float dx, float dy);
 
     void onRetry();
@@ -94,7 +85,6 @@ public final class VideoChrome extends FrameLayout {
   private final TextView currentTime;
   private final TextView durationTime;
   private final TextView speedButton;
-  private final TextView qualityButton;
   private final TextView gestureHud;
   private final TextView errorLabel;
   private final LinearLayout errorPanel;
@@ -228,8 +218,6 @@ public final class VideoChrome extends FrameLayout {
     bottomBar.addView(durationTime, new LinearLayout.LayoutParams(dp(45), -1));
     speedButton = textButton("1.0×", "播放速度", this::showSpeeds);
     bottomBar.addView(speedButton, buttonParams());
-    qualityButton = textButton("画质", "选择播放画质", this::requestQuality);
-    bottomBar.addView(qualityButton, buttonParams());
     muteButton = icon("volume", "静音", this::toggleMute);
     bottomBar.addView(muteButton, buttonParams());
     floatingButton =
@@ -499,7 +487,6 @@ public final class VideoChrome extends FrameLayout {
     currentTime.setVisibility(available >= dp(300) ? VISIBLE : GONE);
     durationTime.setVisibility(available >= dp(520) ? VISIBLE : GONE);
     speedButton.setVisibility(available >= dp(360) ? VISIBLE : GONE);
-    qualityButton.setVisibility(available >= dp(320) ? VISIBLE : GONE);
     muteButton.setVisibility(available >= dp(520) ? VISIBLE : GONE);
     floatingButton.setVisibility(available >= dp(520) ? VISIBLE : GONE);
   }
@@ -507,13 +494,6 @@ public final class VideoChrome extends FrameLayout {
   private void requestMode(Mode requested) {
     cancelGestures();
     callback.onModeRequested(requested);
-  }
-
-  private void requestQuality() {
-    if (player == null || locked) return;
-    endBoost();
-    showControls();
-    callback.onSelectQuality();
   }
 
   private void togglePlayback() {
@@ -571,7 +551,6 @@ public final class VideoChrome extends FrameLayout {
     handler.removeCallbacks(hideControls);
     popup = new PopupMenu(getContext(), moreButton);
     popup.getMenu().add(0, 1, 0, "选择页面视频");
-    popup.getMenu().add(0, 9, 1, "画质 · " + QualityOptions.currentLabel(player));
     popup.getMenu().add(0, 2, 2, "播放速度");
     popup.getMenu().add(0, 3, 3, player != null && player.getVolume() == 0 ? "取消静音" : "静音");
     popup.getMenu().add(0, 4, 4, mode == Mode.FLOATING ? "返回网页位置" : "小窗播放");
@@ -603,7 +582,6 @@ public final class VideoChrome extends FrameLayout {
                     if (player != null)
                       player.seekTo(Math.min(duration(), player.getCurrentPosition() + 15000));
                   }
-                  case 9 -> requestQuality();
                   default -> {}
                 }
               });
@@ -625,9 +603,6 @@ public final class VideoChrome extends FrameLayout {
     boolean muted = player != null && player.getVolume() == 0;
     setButton(muteButton, muted ? "muted" : "volume", muted ? "取消静音" : "静音");
     speedButton.setText(speedLabel(player == null ? 1f : player.getPlaybackParameters().speed));
-    String quality = QualityOptions.currentLabel(player);
-    qualityButton.setText("未知".equals(quality) ? "画质" : quality);
-    qualityButton.setContentDescription("选择播放画质，当前" + quality);
     PlaybackException error = player == null ? null : player.getPlayerError();
     errorPanel.setVisibility(error == null || locked ? GONE : VISIBLE);
     if (error != null) {
@@ -980,14 +955,7 @@ public final class VideoChrome extends FrameLayout {
   private void setButton(ImageButton button, String name, String description) {
     Object current = button.getTag();
     if (!name.equals(current)) {
-      boolean local =
-          name.equals("lock")
-              || name.equals("unlock")
-              || name.equals("float")
-              || name.equals("inline")
-              || name.equals("volume")
-              || name.equals("muted");
-      button.setImageDrawable(local ? new ControlIcon(name) : new Ui.Icon(name, WHITE));
+      button.setImageDrawable(new Ui.Icon(name, WHITE));
       button.setTag(name);
     }
     button.setContentDescription(description);
@@ -1020,83 +988,5 @@ public final class VideoChrome extends FrameLayout {
             ? String.format(Locale.ROOT, "%.1f", speed)
             : String.format(Locale.ROOT, "%.2f", speed))
         + "×";
-  }
-
-  /** Small original vector controls using the same 24-unit stroke system as MediaMaster. */
-  private static final class ControlIcon extends Drawable {
-    private final String name;
-    private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-
-    ControlIcon(String name) {
-      this.name = name;
-      paint.setColor(WHITE);
-      paint.setStyle(Paint.Style.STROKE);
-      paint.setStrokeWidth(1.8f);
-      paint.setStrokeCap(Paint.Cap.ROUND);
-      paint.setStrokeJoin(Paint.Join.ROUND);
-    }
-
-    @Override
-    public void draw(Canvas canvas) {
-      canvas.save();
-      canvas.translate(getBounds().left, getBounds().top);
-      canvas.scale(getBounds().width() / 24f, getBounds().height() / 24f);
-      if (name.equals("lock") || name.equals("unlock")) {
-        canvas.drawRoundRect(5, 10, 19, 21, 2, 2, paint);
-        canvas.drawLine(12, 14, 12, 17, paint);
-        Path shackle = new Path();
-        shackle.moveTo(8, 10);
-        shackle.lineTo(8, 7);
-        shackle.cubicTo(8, 1.5f, 16, 1.5f, 16, 7);
-        if (name.equals("lock")) shackle.lineTo(16, 10);
-        canvas.drawPath(shackle, paint);
-      } else if (name.equals("float") || name.equals("inline")) {
-        canvas.drawRoundRect(3, 4, 21, 20, 2, 2, paint);
-        if (name.equals("float")) {
-          paint.setStyle(Paint.Style.FILL);
-          canvas.drawRoundRect(11, 11, 18, 17, 1, 1, paint);
-          paint.setStyle(Paint.Style.STROKE);
-        } else {
-          canvas.drawLine(15, 15, 8, 8, paint);
-          canvas.drawLine(8, 8, 8, 13, paint);
-          canvas.drawLine(8, 8, 13, 8, paint);
-        }
-      } else {
-        Path speaker = new Path();
-        speaker.moveTo(3, 9);
-        speaker.lineTo(7, 9);
-        speaker.lineTo(12, 5);
-        speaker.lineTo(12, 19);
-        speaker.lineTo(7, 15);
-        speaker.lineTo(3, 15);
-        speaker.close();
-        canvas.drawPath(speaker, paint);
-        if (name.equals("muted")) {
-          canvas.drawLine(16, 9, 21, 15, paint);
-          canvas.drawLine(21, 9, 16, 15, paint);
-        } else {
-          canvas.drawArc(new RectF(12, 7, 20, 17), -65, 130, false, paint);
-          canvas.drawArc(new RectF(11, 3, 24, 21), -60, 120, false, paint);
-        }
-      }
-      canvas.restore();
-    }
-
-    @Override
-    public void setAlpha(int alpha) {
-      paint.setAlpha(alpha);
-      invalidateSelf();
-    }
-
-    @Override
-    public void setColorFilter(ColorFilter filter) {
-      paint.setColorFilter(filter);
-      invalidateSelf();
-    }
-
-    @Override
-    public int getOpacity() {
-      return PixelFormat.TRANSLUCENT;
-    }
   }
 }

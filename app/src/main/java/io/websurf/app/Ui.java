@@ -10,7 +10,6 @@ import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
-import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
@@ -23,6 +22,7 @@ import android.view.animation.PathInterpolator;
 import android.widget.Button;
 import android.widget.ImageButton;
 import android.widget.TextView;
+import androidx.core.graphics.PathParser;
 
 /** Shared native UI tokens, adapted from the user's MediaMaster visual system. */
 public final class Ui {
@@ -238,38 +238,24 @@ public final class Ui {
     }
   }
 
-  /** Original 24-unit line drawings, with a shared 2-unit rounded stroke. */
+  /** Official Lucide paths; aliases retain the existing controls API. */
   public static final class Icon extends Drawable {
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Path[] paths;
+    private final int originalColor;
     private ColorStateList tint;
-    private final String kind;
-    private final Path path = new Path();
-    private final RectF rect = new RectF();
+    private int alpha = 255;
 
     public Icon(String kind, int color) {
-      this.kind = kind;
-      paint.setColor(color);
+      originalColor = color;
+      String[] data = ImportedIcons.paths(kind);
+      paths = new Path[data.length];
+      for (int i = 0; i < data.length; i++) paths[i] = PathParser.createPathFromPathData(data[i]);
       paint.setStyle(Paint.Style.STROKE);
       paint.setStrokeWidth(2f);
       paint.setStrokeCap(Paint.Cap.ROUND);
       paint.setStrokeJoin(Paint.Join.ROUND);
-    }
-
-    private void line(Canvas canvas, float x1, float y1, float x2, float y2) {
-      canvas.drawLine(x1, y1, x2, y2, paint);
-    }
-
-    private void chain(Canvas canvas, float... points) {
-      path.reset();
-      path.moveTo(points[0], points[1]);
-      for (int i = 2; i < points.length; i += 2) path.lineTo(points[i], points[i + 1]);
-      canvas.drawPath(path, paint);
-    }
-
-    private void roundRect(
-        Canvas canvas, float left, float top, float right, float bottom, float radius) {
-      rect.set(left, top, right, bottom);
-      canvas.drawRoundRect(rect, radius, radius, paint);
+      updateColor();
     }
 
     @Override
@@ -280,103 +266,7 @@ public final class Ui {
       canvas.translate(
           bounds.left + (bounds.width() - size) / 2f, bounds.top + (bounds.height() - size) / 2f);
       canvas.scale(size / 24f, size / 24f);
-      switch (kind) {
-        case "back":
-          chain(canvas, 15, 5, 8, 12, 15, 19);
-          break;
-        case "forward":
-          chain(canvas, 9, 5, 16, 12, 9, 19);
-          break;
-        case "home":
-          chain(canvas, 3, 10, 12, 3, 21, 10);
-          chain(canvas, 5, 9, 5, 21, 10, 21, 10, 15, 14, 15, 14, 21, 19, 21, 19, 9);
-          break;
-        case "refresh":
-          rect.set(4, 4, 20, 20);
-          canvas.drawArc(rect, 40, 285, false, paint);
-          chain(canvas, 20, 3, 20, 9, 14, 9);
-          break;
-        case "close":
-          line(canvas, 6, 6, 18, 18);
-          line(canvas, 18, 6, 6, 18);
-          break;
-        case "more":
-          canvas.drawCircle(5, 12, .65f, paint);
-          canvas.drawCircle(12, 12, .65f, paint);
-          canvas.drawCircle(19, 12, .65f, paint);
-          break;
-        case "download":
-          line(canvas, 12, 3, 12, 15);
-          chain(canvas, 7, 10, 12, 15, 17, 10);
-          chain(canvas, 4, 15, 4, 21, 20, 21, 20, 15);
-          break;
-        case "video":
-          roundRect(canvas, 3, 5, 21, 19, 2);
-          chain(canvas, 10, 9, 15, 12, 10, 15, 10, 9);
-          break;
-        case "play":
-          chain(canvas, 8, 4, 20, 12, 8, 20, 8, 4);
-          break;
-        case "pause":
-          line(canvas, 8, 5, 8, 19);
-          line(canvas, 16, 5, 16, 19);
-          break;
-        case "tabs":
-          roundRect(canvas, 7, 7, 21, 21, 2);
-          chain(canvas, 3, 17, 3, 3, 17, 3);
-          break;
-        case "settings":
-          canvas.drawCircle(12, 12, 6, paint);
-          canvas.drawCircle(12, 12, 2, paint);
-          for (int i = 0; i < 8; i++) {
-            double angle = Math.PI * i / 4;
-            line(
-                canvas,
-                12 + 7 * (float) Math.cos(angle),
-                12 + 7 * (float) Math.sin(angle),
-                12 + 9 * (float) Math.cos(angle),
-                12 + 9 * (float) Math.sin(angle));
-          }
-          break;
-        case "add":
-          line(canvas, 12, 5, 12, 19);
-          line(canvas, 5, 12, 19, 12);
-          break;
-        case "link":
-          canvas.save();
-          canvas.rotate(-45, 12, 12);
-          roundRect(canvas, 8, 2, 16, 13, 4);
-          roundRect(canvas, 8, 11, 16, 22, 4);
-          canvas.restore();
-          break;
-        case "check":
-          chain(canvas, 4, 12, 9, 17, 20, 6);
-          break;
-        case "share":
-          canvas.drawCircle(6, 12, 3, paint);
-          canvas.drawCircle(18, 5, 3, paint);
-          canvas.drawCircle(18, 19, 3, paint);
-          line(canvas, 8.6f, 10.5f, 15.4f, 6.5f);
-          line(canvas, 8.6f, 13.5f, 15.4f, 17.5f);
-          break;
-        case "expand":
-          chain(canvas, 8, 3, 3, 3, 3, 8);
-          chain(canvas, 16, 3, 21, 3, 21, 8);
-          chain(canvas, 3, 16, 3, 21, 8, 21);
-          chain(canvas, 16, 21, 21, 21, 21, 16);
-          break;
-        case "minimize":
-          chain(canvas, 3, 8, 8, 8, 8, 3);
-          chain(canvas, 16, 3, 16, 8, 21, 8);
-          chain(canvas, 3, 16, 8, 16, 8, 21);
-          chain(canvas, 16, 21, 16, 16, 21, 16);
-          break;
-        default:
-          canvas.drawCircle(12, 12, 9, paint);
-          canvas.drawOval(8, 3, 16, 21, paint);
-          line(canvas, 3, 12, 21, 12);
-          break;
-      }
+      for (Path path : paths) canvas.drawPath(path, paint);
       canvas.restore();
     }
 
@@ -398,21 +288,28 @@ public final class Ui {
     @Override
     public void setTintList(ColorStateList value) {
       tint = value;
-      onStateChange(getState());
+      updateColor();
     }
 
     @Override
     protected boolean onStateChange(int[] state) {
       if (tint == null) return false;
-      paint.setColor(tint.getColorForState(state, tint.getDefaultColor()));
-      invalidateSelf();
+      updateColor();
       return true;
     }
 
-    @Override
-    public void setAlpha(int alpha) {
-      paint.setAlpha(alpha);
+    private void updateColor() {
+      int color =
+          tint == null ? originalColor : tint.getColorForState(getState(), tint.getDefaultColor());
+      paint.setColor(color);
+      paint.setAlpha(Math.round(Color.alpha(color) * alpha / 255f));
       invalidateSelf();
+    }
+
+    @Override
+    public void setAlpha(int value) {
+      alpha = value;
+      updateColor();
     }
 
     @Override

@@ -21,7 +21,8 @@ public final class DownloadStore {
     public String id = "", title = "", url = "", state = "queued", error = "", outputUri = "";
     public String mimeType = "", fileName = "", detail = "等待下载";
     public int progress;
-    public long bytes, total = -1, createdAt;
+    public long bytes, total = -1, createdAt, bytesPerSecond;
+    public int connections, completedParts, totalParts;
     public final Map<String, String> headers = new LinkedHashMap<>();
 
     public boolean active() {
@@ -35,7 +36,7 @@ public final class DownloadStore {
         case "downloading":
           return "下载中";
         case "converting":
-          return "转换 MP4";
+          return "合并 MP4";
         case "completed":
           return "已完成";
         case "cancelled":
@@ -61,6 +62,10 @@ public final class DownloadStore {
             .put("bytes", bytes)
             .put("total", total)
             .put("createdAt", createdAt)
+            .put("bytesPerSecond", bytesPerSecond)
+            .put("connections", connections)
+            .put("completedParts", completedParts)
+            .put("totalParts", totalParts)
             .put("headers", new JSONObject(headers));
       } catch (org.json.JSONException e) {
         throw new IllegalStateException(e);
@@ -83,6 +88,10 @@ public final class DownloadStore {
       j.bytes = o.optLong("bytes");
       j.total = o.optLong("total", -1);
       j.createdAt = o.optLong("createdAt");
+      j.bytesPerSecond = o.optLong("bytesPerSecond");
+      j.connections = o.optInt("connections");
+      j.completedParts = o.optInt("completedParts");
+      j.totalParts = o.optInt("totalParts");
       JSONObject h = o.optJSONObject("headers");
       if (h != null) {
         java.util.Iterator<String> keys = h.keys();
@@ -133,7 +142,10 @@ public final class DownloadStore {
 
   static synchronized boolean updateProgress(Context c, Job job) {
     Job current = get(c, job.id);
-    if (current != null && "cancelled".equals(current.state)) return false;
+    if (current == null
+        || "cancelled".equals(current.state)
+        || "failed".equals(current.state)
+        || "completed".equals(current.state)) return false;
     put(c, job);
     return true;
   }
@@ -144,10 +156,14 @@ public final class DownloadStore {
     j.state = state;
     j.error = error;
     j.detail = j.stateLabel();
+    if (!j.active()) {
+      j.bytesPerSecond = 0;
+      j.connections = 0;
+    }
     put(c, j);
   }
 
-  static synchronized void remove(Context c, String id) {
+  public static synchronized void remove(Context c, String id) {
     List<Job> jobs = list(c);
     for (int i = jobs.size() - 1; i >= 0; i--) if (jobs.get(i).id.equals(id)) jobs.remove(i);
     write(c, jobs);

@@ -21,6 +21,7 @@ public final class ResourceRow extends LinearLayout {
   private final Map<String, String> headers;
   private final ImageView image;
   private final TextView placeholder, imageSource, quality, variants, details;
+  private final FrameLayout picture;
   private boolean requested;
   private final ViewTreeObserver.OnPreDrawListener visibility = this::loadWhenVisible;
 
@@ -36,16 +37,21 @@ public final class ResourceRow extends LinearLayout {
     this.headers = new LinkedHashMap<>(headers);
     setOrientation(HORIZONTAL);
     setGravity(Gravity.TOP);
-    setPadding(dp(10), dp(10), dp(10), dp(10));
+    setPadding(dp(12), dp(12), dp(12), dp(12));
     setMinimumHeight(dp(108));
-    Ui.ripple(this, Ui.SURFACE, 8);
+    Ui.ripple(this, Ui.SURFACE, 6);
     setOnClickListener(view -> click.run());
     LinearLayout preview = new LinearLayout(context);
     preview.setOrientation(VERTICAL);
-    LayoutParams previewParams = new LayoutParams(dp(104), -2);
+    int previewWidth =
+        getResources().getConfiguration().screenWidthDp < 360
+                || getResources().getConfiguration().fontScale > 1.3f
+            ? 80
+            : 96;
+    LayoutParams previewParams = new LayoutParams(dp(previewWidth), -2);
     previewParams.rightMargin = dp(12);
     addView(preview, previewParams);
-    FrameLayout picture = new FrameLayout(context);
+    picture = new FrameLayout(context);
     picture.setBackground(Ui.shape(context, Ui.BG, 6));
     picture.setClipToOutline(true);
     preview.addView(picture, new LayoutParams(-1, dp(64)));
@@ -53,31 +59,33 @@ public final class ResourceRow extends LinearLayout {
     image.setScaleType(ImageView.ScaleType.FIT_CENTER);
     image.setContentDescription(resource.label() + "的缩略图");
     picture.addView(image, new FrameLayout.LayoutParams(-1, -1));
-    placeholder = Ui.text(context, resource.isVideo() ? "预览待识别" : resource.kind, 12, Ui.MUTED);
+    placeholder = Ui.text(context, resource.isVideo() ? "预览" : resource.kind, 12, Ui.MUTED);
     placeholder.setGravity(Gravity.CENTER);
     picture.addView(placeholder, new FrameLayout.LayoutParams(-1, -1));
-    imageSource = Ui.text(context, "", 11, Ui.MUTED);
+    imageSource = Ui.text(context, "", 12, Ui.MUTED);
     imageSource.setGravity(Gravity.CENTER);
-    imageSource.setMinHeight(dp(28));
-    imageSource.setContentDescription("识别视频预览");
+    imageSource.setMinHeight(dp(20));
+    imageSource.setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);
     preview.addView(imageSource, new LayoutParams(-1, -2));
-    imageSource.setOnClickListener(view -> request(true));
     LinearLayout text = new LinearLayout(context);
     text.setOrientation(VERTICAL);
     addView(text, new LayoutParams(0, -2, 1));
     TextView title = Ui.text(context, resource.label(), 14, Ui.TEXT);
-    title.setMaxLines(2);
+    title.setMaxLines(getResources().getConfiguration().fontScale > 1.3f ? 2 : 1);
     title.setEllipsize(TextUtils.TruncateAt.END);
     text.addView(title, new LayoutParams(-1, -2));
     quality = Ui.text(context, "", 14, Ui.CONTROL);
     quality.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-    quality.setPadding(0, dp(5), 0, dp(3));
+    quality.setPadding(0, dp(4), 0, dp(2));
     quality.setMaxLines(2);
     text.addView(quality, new LayoutParams(-1, -2));
     variants = Ui.text(context, "", 12, Ui.MUTED);
     variants.setMaxLines(2);
+    variants.setEllipsize(TextUtils.TruncateAt.END);
     text.addView(variants, new LayoutParams(-1, -2));
     details = Ui.text(context, "", 12, Ui.MUTED);
+    details.setMaxLines(1);
+    details.setEllipsize(TextUtils.TruncateAt.END);
     details.setPadding(0, dp(2), 0, dp(4));
     text.addView(details, new LayoutParams(-1, -2));
     TextView url = Ui.text(context, resource.url, 11, Ui.MUTED);
@@ -124,25 +132,29 @@ public final class ResourceRow extends LinearLayout {
     }
     requested = true;
     getViewTreeObserver().removeOnPreDrawListener(visibility);
-    imageSource.setText("识别中…");
-    imageSource.setEnabled(false);
+    imageSource.setText("加载中");
+    picture.setOnClickListener(null);
+    picture.setClickable(false);
+    picture.setFocusable(false);
+    picture.setContentDescription(null);
     WeakReference<ResourceRow> reference = new WeakReference<>(this);
     ResourcePreviewLoader.Callback callback =
         result -> {
           ResourceRow row = reference.get();
           if (row == null || !row.isAttachedToWindow()) return;
           row.updateText();
-          row.imageSource.setEnabled(true);
           if (result.bitmap != null) {
             row.image.setImageBitmap(result.bitmap);
             row.placeholder.setVisibility(GONE);
             row.imageSource.setText(result.imageSource);
-            row.imageSource.setContentDescription("重新识别视频预览");
+            row.picture.setContentDescription(result.imageSource);
           } else {
             row.placeholder.setVisibility(VISIBLE);
             row.placeholder.setText("暂无预览");
             row.imageSource.setText("重试预览");
-            row.imageSource.setContentDescription("重试识别视频预览");
+            row.picture.setContentDescription("重试预览");
+            row.picture.setOnClickListener(view -> row.request(true));
+            Ui.ripple(row.picture, Ui.BG, 6);
           }
         };
     if (retry) loader.retry(resource, headers, callback);

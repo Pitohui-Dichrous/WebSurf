@@ -12,12 +12,14 @@ import android.os.Environment;
 import android.provider.MediaStore;
 import android.webkit.CookieManager;
 import androidx.core.content.FileProvider;
+import io.websurf.app.MediaTransferCache;
 import java.io.BufferedInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.Closeable;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -31,7 +33,14 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import javax.crypto.Cipher;
 import javax.crypto.CipherInputStream;
 import javax.crypto.spec.IvParameterSpec;
@@ -48,21 +57,31 @@ final class DownloadEngine {
   private final Progress progress;
   private final File directory;
   private volatile boolean cancelled;
-  private volatile HttpURLConnection activeConnection;
-  private long lastUpdate;
-  private final Map<String, byte[]> keys = new HashMap<>();
+  private final Set<HttpURLConnection> activeConnections = ConcurrentHashMap.newKeySet();
+  private volatile ExecutorService workers;
+  private final int parallelism;
+  private long lastUpdate, speedTime, speedBytes;
+  private final Map<String, byte[]> keys = new ConcurrentHashMap<>();
 
   DownloadEngine(Context c, DownloadStore.Job j, Progress p) {
     context = c.getApplicationContext();
     job = j;
     progress = p;
     directory = new File(new File(c.getCacheDir(), "downloads"), j.id);
+    parallelism =
+        Math.max(
+            1,
+            Math.min(
+                16,
+                c.getSharedPreferences("browser", Context.MODE_PRIVATE)
+                    .getInt("download_threads", 8)));
   }
 
   void cancel() {
     cancelled = true;
-    HttpURLConnection c = activeConnection;
-    if (c != null) c.disconnect();
+    for (HttpURLConnection connection : activeConnections) connection.disconnect();
+    ExecutorService pool = workers;
+    if (pool != null) pool.shutdownNow();
   }
 
   private void check() {
@@ -73,9 +92,15 @@ final class DownloadEngine {
     if (!directory.mkdirs() && !directory.isDirectory()) throw new IOException("无法创建下载缓存");
     try {
       HlsPlaylist.resolve(job.url, "");
+      MediaTransferCache.beginDownload(context, job.url, job.headers);
       job.state = "downloading";
       job.progress = 0;
       job.bytes = 0;
+      job.bytesPerSecond = 0;
+      job.completedParts = 0;
+      job.totalParts = 0;
+      speedTime = android.os.SystemClock.elapsedRealtime();
+      speedBytes = 0;
       job.error = "";
       job.detail = "连接中";
       update(true);
@@ -92,7 +117,9 @@ final class DownloadEngine {
         boolean hls = prefix.startsWith("#EXTM3U");
         if (hls) {
           String text = readText(r.input, 8 * 1024 * 1024);
-          completed = hls(HlsPlaylist.parse(r.url, text));
+          HlsPlaylist playlist = HlsPlaylist.parse(r.url, text);
+          r.close();
+          completed = hls(playlist);
           job.mimeType = "video/mp4";
           job.fileName = DownloadNames.mp4(job.title);
         } else {
@@ -116,8 +143,19 @@ final class DownloadEngine {
                   job.mimeType);
           completed = new File(directory, "direct.bin");
           job.total = r.connection.getContentLengthLong();
-          try (OutputStream out = new FileOutputStream(completed)) {
-            copy(r.input, out, true, job.total);
+          Validator validator = Validator.from(r.connection);
+          if (parallelism > 1
+              && job.total >= 2 * 1024 * 1024L
+              && "bytes".equalsIgnoreCase(r.connection.getHeaderField("Accept-Ranges"))
+              && validator != null) {
+            String resolved = r.url;
+            long total = job.total;
+            r.close();
+            downloadDirectParallel(resolved, total, validator, completed);
+          } else {
+            try (OutputStream out = new FileOutputStream(completed)) {
+              copy(r.input, out, true, job.total);
+            }
           }
           if (job.total >= 0 && completed.length() != job.total)
             throw new IOException("文件下载不完整，请重试");
@@ -126,6 +164,7 @@ final class DownloadEngine {
       }
       check();
       job.detail = "保存文件";
+      job.bytesPerSecond = 0;
       update(true);
       Uri output = publish(completed);
       try {
@@ -144,6 +183,9 @@ final class DownloadEngine {
       check();
       throw e;
     } finally {
+      stopWorkers();
+      job.connections = 0;
+      job.bytesPerSecond = 0;
       removeLocal(directory);
     }
   }
@@ -174,42 +216,64 @@ final class DownloadEngine {
     }
     int count = 0;
     for (HlsPlaylist p : tracks) count += p.segments.size();
-    List<File> media = new ArrayList<>();
-    int done = 0;
+    job.totalParts = count;
+    job.completedParts = 0;
     job.total = -1;
+    List<File> media = new ArrayList<>();
     for (int ti = 0; ti < tracks.size(); ti++) {
       HlsPlaylist p = tracks.get(ti);
+      HlsPlaylist.Init init = p.segments.isEmpty() ? null : p.segments.get(0).init;
+      for (HlsPlaylist.Segment segment : p.segments)
+        if (segment.init != init) throw new IOException("播放期间更换了初始化片段，暂不能安全合并");
       File merged = new File(directory, "track-" + ti + ".media");
-      HlsPlaylist.Init previous = null;
       try (OutputStream joined = new FileOutputStream(merged)) {
-        for (HlsPlaylist.Segment segment : p.segments) {
-          check();
-          if (segment.init != null && segment.init != previous) {
-            if (previous != null) throw new IOException("播放期间更换了初始化片段，暂不能安全合并");
-            File init =
-                fetchPart(
-                    segment.init.url,
-                    segment.init.range,
-                    segment.init.key,
-                    segment.sequence,
-                    "init");
-            append(init, joined);
-            init.delete();
-            previous = segment.init;
+        if (init != null) {
+          File header =
+              fetchPart(
+                  init.url,
+                  init.range,
+                  init.key,
+                  p.segments.get(0).sequence,
+                  "track-" + ti + "-init");
+          append(header, joined);
+          header.delete();
+        }
+        if (parallelism == 1) {
+          for (int i = 0; i < p.segments.size(); i++) {
+            File part = fetchSegment(p.segments.get(i), "track-" + ti + "-" + i);
+            append(part, joined);
+            part.delete();
           }
-          File part =
-              fetchPart(segment.url, segment.range, segment.key, segment.sequence, "segment");
-          append(part, joined);
-          part.delete();
-          done++;
-          job.progress = Math.min(90, (int) (90L * done / count));
-          job.detail = "分片 " + done + " / " + count;
-          update(true);
+        } else {
+          ExecutorService pool = startWorkers(Math.min(parallelism, p.segments.size()));
+          List<Future<File>> pending = new ArrayList<>();
+          int submitted = 0;
+          try {
+            while (submitted < Math.min(parallelism, p.segments.size())) {
+              final int index = submitted++;
+              final String name = "track-" + ti + "-" + index;
+              pending.add(pool.submit(() -> fetchSegment(p.segments.get(index), name)));
+            }
+            for (int i = 0; i < p.segments.size(); i++) {
+              File part = await(pending.remove(0));
+              append(part, joined);
+              part.delete();
+              if (submitted < p.segments.size()) {
+                final int index = submitted++;
+                final String name = "track-" + ti + "-" + index;
+                pending.add(pool.submit(() -> fetchSegment(p.segments.get(index), name)));
+              }
+            }
+          } finally {
+            for (Future<File> future : pending) future.cancel(true);
+            stopWorkers();
+          }
         }
       }
       media.add(merged);
     }
     job.state = "converting";
+    job.bytesPerSecond = 0;
     job.progress = 92;
     job.detail = "合并为 MP4";
     update(true);
@@ -231,6 +295,17 @@ final class DownloadEngine {
     }
   }
 
+  private File fetchSegment(HlsPlaylist.Segment segment, String name) throws Exception {
+    File part = fetchPart(segment.url, segment.range, segment.key, segment.sequence, name);
+    synchronized (this) {
+      job.completedParts++;
+      job.progress = Math.min(90, (int) (90L * job.completedParts / job.totalParts));
+      job.detail = "分片 " + job.completedParts + " / " + job.totalParts;
+      update(true);
+    }
+    return part;
+  }
+
   private File fetchPart(
       String url, HlsPlaylist.Range range, HlsPlaylist.Key key, long sequence, String name)
       throws Exception {
@@ -238,29 +313,15 @@ final class DownloadEngine {
     File part = new File(directory, name + ".part");
     for (int attempt = 0; attempt < 3; attempt++) {
       check();
+      TransferInput transfer = null;
+      String resolvedUrl = url;
       try {
-        byte[] keyBytes = null;
-        if (key != null) {
-          keyBytes = keys.get(key.url);
-          if (keyBytes == null) {
-            try (Response response = connect(key.url, null)) {
-              ByteArrayOutputStream data = new ByteArrayOutputStream();
-              byte[] b = new byte[17];
-              int n;
-              while ((n = response.input.read(b)) >= 0) {
-                check();
-                data.write(b, 0, n);
-                if (data.size() > 16) throw new IOException("AES 密钥长度无效");
-              }
-              keyBytes = data.toByteArray();
-            }
-            if (keyBytes.length != 16) throw new IOException("AES 密钥长度无效");
-            keys.put(key.url, keyBytes);
-          }
-        }
+        byte[] keyBytes = key == null ? null : readKey(key.url);
         try (Response r = connect(url, range);
             OutputStream out = new FileOutputStream(part)) {
-          InputStream input = r.input;
+          resolvedUrl = r.url;
+          transfer = new TransferInput(r.input);
+          InputStream input = transfer;
           if (keyBytes != null) {
             Cipher cipher = Cipher.getInstance("AES/CBC/PKCS5Padding");
             cipher.init(
@@ -270,22 +331,198 @@ final class DownloadEngine {
             input = new CipherInputStream(input, cipher);
           }
           long expected = range != null ? range.length : r.connection.getContentLengthLong();
-          long before = job.bytes;
-          copy(input, out, false, expected);
-          // Decrypted sizes differ from transport bytes; HTTP stream validates ranged length
-          // separately.
-          if (key == null && expected >= 0 && job.bytes - before != expected)
-            throw new IOException("视频分片下载不完整");
+          byte[] buffer = new byte[128 * 1024];
+          int n;
+          while ((n = input.read(buffer)) != -1) {
+            check();
+            out.write(buffer, 0, n);
+          }
+          if (expected >= 0 && transfer.count != expected) throw new IOException("视频分片下载不完整");
           if (part.length() == 0) throw new IOException("视频分片为空");
         }
         return part;
       } catch (IOException e) {
+        synchronized (this) {
+          job.bytes = Math.max(0, job.bytes - (transfer == null ? 0 : transfer.count));
+        }
+        MediaTransferCache.invalidate(context, job.url, job.headers, resolvedUrl);
         last = e;
         part.delete();
         check();
       }
     }
     throw last == null ? new IOException("视频分片下载失败") : last;
+  }
+
+  private byte[] readKey(String url) throws Exception {
+    // Keys are tiny. Serialize only their cache miss, never media transfers.
+    synchronized (keys) {
+      byte[] bytes = keys.get(url);
+      if (bytes != null) return bytes;
+      try (Response response = connect(url, null)) {
+        ByteArrayOutputStream data = new ByteArrayOutputStream();
+        byte[] b = new byte[17];
+        int n;
+        while ((n = response.input.read(b)) >= 0) {
+          check();
+          data.write(b, 0, n);
+          if (data.size() > 16) throw new IOException("AES 密钥长度无效");
+        }
+        bytes = data.toByteArray();
+      }
+      if (bytes.length != 16) throw new IOException("AES 密钥长度无效");
+      keys.put(url, bytes);
+      return bytes;
+    }
+  }
+
+  private ExecutorService startWorkers(int count) {
+    workers = Executors.newFixedThreadPool(Math.max(1, Math.min(parallelism, count)));
+    return workers;
+  }
+
+  private void stopWorkers() {
+    ExecutorService pool = workers;
+    workers = null;
+    if (pool == null) return;
+    pool.shutdownNow();
+    for (HttpURLConnection connection : activeConnections) connection.disconnect();
+    boolean interrupted = Thread.interrupted();
+    try {
+      boolean terminated = false;
+      while (!terminated) {
+        try {
+          terminated = pool.awaitTermination(1, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+          interrupted = true;
+        }
+        if (!terminated)
+          for (HttpURLConnection connection : activeConnections) connection.disconnect();
+      }
+    } finally {
+      if (interrupted) Thread.currentThread().interrupt();
+    }
+  }
+
+  private File await(Future<File> future) throws Exception {
+    try {
+      return future.get();
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new CancellationException("已取消");
+    } catch (ExecutionException e) {
+      Throwable cause = e.getCause();
+      if (cause instanceof Exception) throw (Exception) cause;
+      throw new IOException("下载分片失败", cause);
+    }
+  }
+
+  private static final class Validator {
+    final String header, value;
+
+    Validator(String header, String value) {
+      this.header = header;
+      this.value = value;
+    }
+
+    static Validator from(HttpURLConnection c) {
+      String etag = c.getHeaderField("ETag");
+      if (etag != null && etag.startsWith("\"") && etag.endsWith("\""))
+        return new Validator("ETag", etag);
+      String modified = c.getHeaderField("Last-Modified");
+      long last = c.getHeaderFieldDate("Last-Modified", -1),
+          date = c.getHeaderFieldDate("Date", -1);
+      return modified != null && last > 0 && date - last >= 60000
+          ? new Validator("Last-Modified", modified)
+          : null;
+    }
+  }
+
+  private static final class RangeRejectedException extends IOException {
+    RangeRejectedException(String message) {
+      super(message);
+    }
+
+    RangeRejectedException(String message, IOException cause) {
+      super(message, cause);
+    }
+  }
+
+  private void downloadDirectParallel(String url, long total, Validator validator, File output)
+      throws Exception {
+    List<Future<File>> futures = new ArrayList<>();
+    int count = Math.min(parallelism, (int) Math.min(16L, total / (512 * 1024L)));
+    ExecutorService pool = startWorkers(count);
+    try {
+      for (int index = 0; index < count; index++) {
+        final long start = (total / count) * index;
+        final long end = index + 1 == count ? total : (total / count) * (index + 1);
+        final int partIndex = index;
+        futures.add(
+            pool.submit(
+                () -> {
+                  File part = new File(directory, "range-" + partIndex + ".part");
+                  HlsPlaylist.Range range = new HlsPlaylist.Range(start, end - start);
+                  try (Response r = connect(url, range, validator, total);
+                      OutputStream out = new FileOutputStream(part)) {
+                    long copied = 0;
+                    byte[] buffer = new byte[128 * 1024];
+                    int n;
+                    while (true) {
+                      try {
+                        n = r.input.read(buffer);
+                      } catch (IOException e) {
+                        throw new RangeRejectedException("并发连接中断", e);
+                      }
+                      if (n == -1) break;
+                      check();
+                      out.write(buffer, 0, n);
+                      copied += n;
+                      account(n, true);
+                      if (copied > range.length) throw new RangeRejectedException("下载范围长度发生变化");
+                    }
+                    if (copied != range.length) throw new RangeRejectedException("下载范围不完整");
+                  }
+                  return part;
+                }));
+      }
+      try (OutputStream joined = new FileOutputStream(output)) {
+        for (Future<File> future : futures) {
+          File part = await(future);
+          append(part, joined);
+          part.delete();
+        }
+      }
+    } catch (RangeRejectedException failure) {
+      for (Future<File> future : futures) future.cancel(true);
+      stopWorkers();
+      check();
+      MediaTransferCache.invalidate(context, job.url, job.headers, url);
+      // An ignored range or changed entity must never be mixed with earlier chunks.
+      synchronized (this) {
+        job.bytes = 0;
+        job.progress = 0;
+        job.bytesPerSecond = 0;
+        speedBytes = 0;
+        speedTime = android.os.SystemClock.elapsedRealtime();
+        job.detail = "单连接下载";
+      }
+      try (Response response = connect(job.url, null);
+          OutputStream out = new FileOutputStream(output)) {
+        job.total = response.connection.getContentLengthLong();
+        String mime = DownloadNames.mime(response.connection.getContentType(), job.mimeType);
+        if ((job.mimeType.startsWith("video/")
+                || job.mimeType.startsWith("audio/")
+                || job.mimeType.startsWith("image/"))
+            && (mime.equals("text/html") || mime.equals("application/json")))
+          throw new IOException("服务器返回了网页或错误信息，请重新在网页播放后下载");
+        job.mimeType = mime;
+        copy(response.input, out, true, job.total);
+      }
+    } finally {
+      for (Future<File> future : futures) future.cancel(true);
+      stopWorkers();
+    }
   }
 
   static byte[] iv(String text, long sequence) throws IOException {
@@ -325,18 +562,29 @@ final class DownloadEngine {
     while ((n = input.read(buffer)) != -1) {
       check();
       out.write(buffer, 0, n);
-      job.bytes += n;
-      if (direct) {
-        job.progress = total > 0 ? (int) Math.min(96, job.bytes * 96 / total) : 0;
-        job.detail = "下载中";
-      }
-      update(false);
+      account(n, direct);
     }
   }
 
-  private void update(boolean force) {
+  private synchronized void account(long count, boolean direct) {
+    job.bytes += count;
+    if (direct) {
+      job.progress = job.total > 0 ? (int) Math.min(96, job.bytes * 96.0 / job.total) : 0;
+      job.detail = "下载中";
+    }
+    update(false);
+  }
+
+  private synchronized void update(boolean force) {
     check();
     long now = android.os.SystemClock.elapsedRealtime();
+    job.connections = activeConnections.size();
+    if (now - speedTime >= 500) {
+      job.bytesPerSecond =
+          Math.max(0, (job.bytes - speedBytes) * 1000 / Math.max(1, now - speedTime));
+      speedTime = now;
+      speedBytes = job.bytes;
+    }
     if (force || now - lastUpdate >= 600) {
       lastUpdate = now;
       progress.changed(job);
@@ -344,11 +592,16 @@ final class DownloadEngine {
   }
 
   private Response connect(String address, HlsPlaylist.Range range) throws IOException {
+    return connect(address, range, null, -1);
+  }
+
+  private Response connect(String address, HlsPlaylist.Range range, Validator validator, long total)
+      throws IOException {
     String url = HlsPlaylist.resolve(address, "");
     for (int redirects = 0; redirects < 8; redirects++) {
       check();
       HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
-      activeConnection = c;
+      activeConnections.add(c);
       c.setConnectTimeout(20000);
       c.setReadTimeout(20000);
       c.setInstanceFollowRedirects(false);
@@ -362,6 +615,10 @@ final class DownloadEngine {
         if (name.equalsIgnoreCase("Host")
             || name.equalsIgnoreCase("Content-Length")
             || name.equalsIgnoreCase("Range")
+            || name.equalsIgnoreCase("If-Range")
+            || name.equalsIgnoreCase("If-None-Match")
+            || name.equalsIgnoreCase("If-Modified-Since")
+            || name.equalsIgnoreCase("X-WebSurf-Transfer-Scope")
             || name.equalsIgnoreCase("Accept-Encoding")) continue;
         if (name.contains("\r")
             || name.contains("\n")
@@ -376,6 +633,7 @@ final class DownloadEngine {
           c.setRequestProperty("Cookie", cookies);
       } catch (RuntimeException ignored) {
       }
+      if (validator != null) c.setRequestProperty("If-Range", validator.value);
       if (range != null)
         c.setRequestProperty(
             "Range", "bytes=" + range.offset + "-" + (range.offset + range.length - 1));
@@ -383,36 +641,55 @@ final class DownloadEngine {
       try {
         code = c.getResponseCode();
       } catch (IOException e) {
-        c.disconnect();
+        disconnect(c);
         throw e;
       }
       if (code >= 300 && code <= 399) {
         String location = c.getHeaderField("Location");
-        c.disconnect();
+        disconnect(c);
         if (location == null) throw new IOException("下载重定向缺少地址");
         url = HlsPlaylist.resolve(url, location);
         continue;
       }
       if (code < 200 || code >= 300) {
-        c.disconnect();
-        throw new IOException("服务器返回 HTTP " + code + "，请回到网页重新播放后重试");
+        disconnect(c);
+        String message = "服务器返回 HTTP " + code + "，请回到网页重新播放后重试";
+        if (validator != null && (code == 412 || code == 416))
+          throw new RangeRejectedException(message);
+        throw new IOException(message);
+      }
+      String encoding = c.getHeaderField("Content-Encoding");
+      if (encoding != null && !encoding.isEmpty() && !"identity".equalsIgnoreCase(encoding)) {
+        disconnect(c);
+        throw new IOException("服务器未返回原始文件数据，请重试");
       }
       if (range != null) {
         String contentRange = c.getHeaderField("Content-Range");
         String prefix = "bytes " + range.offset + "-" + (range.offset + range.length - 1) + "/";
-        if (code != 206 || contentRange == null || !contentRange.startsWith(prefix)) {
-          c.disconnect();
+        if (code != 206
+            || contentRange == null
+            || !contentRange.startsWith(prefix)
+            || (validator != null
+                && (!contentRange.equals(prefix + total)
+                    || !validator.value.equals(c.getHeaderField(validator.header))))) {
+          disconnect(c);
+          if (validator != null) throw new RangeRejectedException("服务器未正确返回下载范围");
           throw new IOException("服务器未正确返回视频分片范围");
         }
       }
       try {
-        return new Response(c, url);
+        return new Response(c, url, range);
       } catch (IOException e) {
-        c.disconnect();
+        disconnect(c);
         throw e;
       }
     }
     throw new IOException("下载重定向次数过多");
+  }
+
+  private void disconnect(HttpURLConnection connection) {
+    activeConnections.remove(connection);
+    connection.disconnect();
   }
 
   private static boolean sameOrigin(String a, String b) {
@@ -435,10 +712,36 @@ final class DownloadEngine {
     final BufferedInputStream input;
     final String url;
 
-    Response(HttpURLConnection c, String u) throws IOException {
+    Response(HttpURLConnection c, String u, HlsPlaylist.Range range) throws IOException {
       connection = c;
       url = u;
-      input = new BufferedInputStream(c.getInputStream(), 64 * 1024);
+      long entityTotal = -1;
+      if (c.getResponseCode() == 200) entityTotal = c.getContentLengthLong();
+      else if (c.getResponseCode() == 206) {
+        String contentRange = c.getHeaderField("Content-Range");
+        if (contentRange != null) {
+          int slash = contentRange.lastIndexOf('/');
+          if (slash >= 0) {
+            try {
+              long parsed = Long.parseLong(contentRange.substring(slash + 1).trim());
+              if (parsed >= 0) entityTotal = parsed;
+            } catch (NumberFormatException ignored) {
+            }
+          }
+        }
+      }
+      InputStream raw = c.getInputStream();
+      raw =
+          MediaTransferCache.capture(
+              context,
+              job.url,
+              job.headers,
+              u,
+              range == null ? 0 : range.offset,
+              c.getContentLengthLong(),
+              raw,
+              entityTotal);
+      input = new BufferedInputStream(raw, 64 * 1024);
     }
 
     public void close() {
@@ -446,8 +749,35 @@ final class DownloadEngine {
         input.close();
       } catch (IOException ignored) {
       }
-      connection.disconnect();
-      if (activeConnection == connection) activeConnection = null;
+      disconnect(connection);
+    }
+  }
+
+  private final class TransferInput extends FilterInputStream {
+    long count;
+
+    TransferInput(InputStream input) {
+      super(input);
+    }
+
+    @Override
+    public int read() throws IOException {
+      int value = in.read();
+      if (value >= 0) {
+        count++;
+        account(1, false);
+      }
+      return value;
+    }
+
+    @Override
+    public int read(byte[] buffer, int offset, int length) throws IOException {
+      int n = in.read(buffer, offset, length);
+      if (n > 0) {
+        count += n;
+        account(n, false);
+      }
+      return n;
     }
   }
 

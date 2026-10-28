@@ -40,12 +40,19 @@ import org.junit.runner.RunWith;
 public class DownloadEngineInstrumentedTest {
   private Context context;
   private FixtureServer server;
+  private boolean hadThreads;
+  private int oldThreads;
   private final List<Uri> outputs = new ArrayList<>();
   private final List<String> storedIds = new ArrayList<>();
 
   @Before
   public void setup() throws Exception {
     context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+    android.content.SharedPreferences preferences =
+        context.getSharedPreferences("browser", Context.MODE_PRIVATE);
+    hadThreads = preferences.contains("download_threads");
+    oldThreads = preferences.getInt("download_threads", 8);
+    assertTrue(preferences.edit().putInt("download_threads", 4).commit());
     server = new FixtureServer();
   }
 
@@ -54,6 +61,11 @@ public class DownloadEngineInstrumentedTest {
     if (server != null) server.close();
     for (Uri uri : outputs) context.getContentResolver().delete(uri, null, null);
     for (String id : storedIds) DownloadStore.remove(context, id);
+    android.content.SharedPreferences.Editor edit =
+        context.getSharedPreferences("browser", Context.MODE_PRIVATE).edit();
+    if (hadThreads) edit.putInt("download_threads", oldThreads);
+    else edit.remove("download_threads");
+    assertTrue(edit.commit());
   }
 
   @Test
@@ -70,6 +82,15 @@ public class DownloadEngineInstrumentedTest {
     DownloadStore.Job job = download("/aes.m3u8");
     assertMp4(job, true);
     assertTrue(server.requests.contains("/key.bin"));
+    long encrypted =
+        server.files.entrySet().stream()
+            .filter(e -> e.getKey().startsWith("/enc-segment"))
+            .mapToLong(e -> e.getValue().length)
+            .sum();
+    assertEquals(
+        "Download bytes must count ciphertext transport, not decrypted output",
+        encrypted,
+        job.bytes);
   }
 
   @Test
@@ -174,6 +195,192 @@ public class DownloadEngineInstrumentedTest {
     assertEquals("WebSurf-test", server.crossHeaders.get("user-agent"));
   }
 
+  @Test
+  public void hlsSegmentsTransferConcurrentlyButOutputRetainsOrder() throws Exception {
+    DownloadStore.Job job = download("/parallel.m3u8");
+    assertMp4(job, true);
+    assertTrue("Segment transfers never overlapped", server.maxHls.get() >= 2);
+    assertTrue("Segment concurrency exceeded its bound", server.maxHls.get() <= 4);
+    assertEquals(4, job.totalParts);
+    assertEquals(4, job.completedParts);
+    assertTrue(
+        "Fixture must complete later source segments first",
+        !server.finishedHls.get(0).contains("segment00"));
+  }
+
+  @Test
+  public void validatedHttpRangesTransferConcurrentlyAndPreserveEveryByte() throws Exception {
+    DownloadStore.Job job = download("/range-large");
+    assertTrue("HTTP ranges never overlapped", server.maxRanges.get() >= 2);
+    assertTrue(server.maxRanges.get() <= 4);
+    assertTrue(server.rangeRequests.get() >= 4);
+    assertOutput(job, server.large);
+    assertEquals(server.large.length, job.bytes);
+  }
+
+  @Test
+  public void ignoredRangesFallBackToOneCompleteResponse() throws Exception {
+    DownloadStore.Job job = download("/range-ignore");
+    assertTrue(server.rangeRequests.get() > 0);
+    assertTrue(server.fullRequests.get() >= 2);
+    assertOutput(job, server.large);
+    assertEquals(server.large.length, job.bytes);
+  }
+
+  @Test
+  public void changedEntityNeverMixesOldAndNewRangeBytes() throws Exception {
+    DownloadStore.Job job = download("/range-changed");
+    assertTrue(server.rangeRequests.get() > 0);
+    assertTrue(server.fullRequests.get() >= 2);
+    assertOutput(job, server.changed);
+    assertEquals(server.changed.length, job.bytes);
+  }
+
+  @Test
+  public void incorrectRangeTotalFallsBackWithoutPublishingCorruption() throws Exception {
+    DownloadStore.Job job = download("/range-wrong-total");
+    assertTrue(server.rangeRequests.get() > 0);
+    assertOutput(job, server.large);
+    assertEquals(server.large.length, job.bytes);
+  }
+
+  @Test
+  public void weakValidatorKeepsOneConnectionInsteadOfUnsafeRangeMixing() throws Exception {
+    assertOutput(download("/range-weak"), server.large);
+    assertEquals(0, server.rangeRequests.get());
+  }
+
+  @Test
+  public void cancelledConcurrentHlsStopsEveryWorkerAndPublishesNothing() throws Exception {
+    DownloadStore.Job job = job("/parallel.m3u8");
+    DownloadEngine[] holder = new DownloadEngine[1];
+    holder[0] =
+        new DownloadEngine(
+            context,
+            job,
+            current -> {
+              if (current.bytes > 0) holder[0].cancel();
+            });
+    try {
+      holder[0].run();
+      fail("Expected cancellation");
+    } catch (CancellationException expected) {
+      assertEquals("", job.outputUri);
+      assertEquals(0, job.connections);
+      assertTrue(server.maxHls.get() >= 2);
+    }
+  }
+
+  @Test
+  public void singleConnectionPreferenceDisablesSegmentParallelism() throws Exception {
+    assertTrue(
+        context
+            .getSharedPreferences("browser", Context.MODE_PRIVATE)
+            .edit()
+            .putInt("download_threads", 1)
+            .commit());
+    DownloadStore.Job job = download("/parallel.m3u8");
+    assertMp4(job, true);
+    assertEquals(1, server.maxHls.get());
+    assertEquals(4, job.completedParts);
+  }
+
+  @Test
+  public void lateProgressCannotReviveEndedOrRemovedTask() {
+    DownloadStore.Job stale = job("/document");
+    storedIds.add(stale.id);
+    for (String terminal : new String[] {"failed", "cancelled", "completed"}) {
+      stale.state = "downloading";
+      stale.connections = 4;
+      stale.bytesPerSecond = 4096;
+      DownloadStore.put(context, stale);
+      DownloadStore.changeState(context, stale.id, terminal, "terminal fixture");
+      assertFalse(DownloadStore.updateProgress(context, stale));
+      DownloadStore.Job saved = DownloadStore.get(context, stale.id);
+      assertEquals(terminal, saved.state);
+      assertEquals(0, saved.connections);
+      assertEquals(0, saved.bytesPerSecond);
+    }
+    DownloadStore.remove(context, stale.id);
+    assertFalse(DownloadStore.updateProgress(context, stale));
+    assertNull(DownloadStore.get(context, stale.id));
+  }
+
+  @Test
+  public void eightAndSixteenHlsWorkersReachTheirBoundAndRetainMediaOrder() throws Exception {
+    for (int count : new int[] {8, 16}) {
+      setThreads(count);
+      server.maxHls.set(0);
+      DownloadStore.Job job = download("/wide-" + count + ".m3u8");
+      assertMp4(job, true);
+      assertEquals("HLS overlap at configured " + count + " workers", count, server.maxHls.get());
+      assertEquals(16, job.totalParts);
+      assertEquals(16, job.completedParts);
+    }
+  }
+
+  @Test
+  public void eightAndSixteenHttpRangesReachTheirBoundAndPreserveBytes() throws Exception {
+    for (int count : new int[] {8, 16}) {
+      setThreads(count);
+      server.maxRanges.set(0);
+      server.rangeRequests.set(0);
+      DownloadStore.Job job = download("/range-wide-" + count);
+      assertEquals(
+          "HTTP overlap at configured " + count + " workers", count, server.maxRanges.get());
+      assertEquals(count, server.rangeRequests.get());
+      assertOutput(job, server.wide);
+      assertEquals(server.wide.length, job.bytes);
+    }
+  }
+
+  @Test
+  public void sixteenWorkerCancellationClosesAllTransfersWithoutOutput() throws Exception {
+    setThreads(16);
+    DownloadStore.Job job = job("/wide-16.m3u8");
+    DownloadEngine[] holder = new DownloadEngine[1];
+    holder[0] =
+        new DownloadEngine(
+            context,
+            job,
+            current -> {
+              if (current.bytes > 0) holder[0].cancel();
+            });
+    try {
+      holder[0].run();
+      fail("Expected cancellation");
+    } catch (CancellationException expected) {
+      assertEquals("", job.outputUri);
+      assertEquals(0, job.connections);
+      assertEquals(16, server.maxHls.get());
+    }
+  }
+
+  @Test
+  public void smallHttpFilesUseOnlyEnoughRangesForHalfMegabyteParts() throws Exception {
+    setThreads(16);
+    DownloadStore.Job job = download("/range-large");
+    assertOutput(job, server.large);
+    assertEquals(6, server.rangeRequests.get());
+    assertTrue(server.maxRanges.get() <= 6);
+  }
+
+  private void setThreads(int count) {
+    assertTrue(
+        context
+            .getSharedPreferences("browser", Context.MODE_PRIVATE)
+            .edit()
+            .putInt("download_threads", count)
+            .commit());
+  }
+
+  private void assertOutput(DownloadStore.Job job, byte[] expected) throws Exception {
+    try (InputStream input =
+        context.getContentResolver().openInputStream(Uri.parse(job.outputUri))) {
+      assertArrayEquals(expected, read(input));
+    }
+  }
+
   private DownloadStore.Job waitFor(String id, String expected) throws Exception {
     long until = System.currentTimeMillis() + 20000;
     DownloadStore.Job job;
@@ -265,6 +472,19 @@ public class DownloadEngineInstrumentedTest {
     final List<String> requests = java.util.Collections.synchronizedList(new ArrayList<>());
     final AtomicInteger rejected = new AtomicInteger();
     final AtomicInteger retryRequests = new AtomicInteger();
+    final AtomicInteger rangeRequests = new AtomicInteger(), fullRequests = new AtomicInteger();
+    final AtomicInteger activeRanges = new AtomicInteger(), maxRanges = new AtomicInteger();
+    final AtomicInteger activeHls = new AtomicInteger(), maxHls = new AtomicInteger();
+    final List<String> finishedHls = java.util.Collections.synchronizedList(new ArrayList<>());
+    final byte[] large = new byte[3 * 1024 * 1024], changed = new byte[3 * 1024 * 1024];
+    final byte[] wide = new byte[8 * 1024 * 1024];
+    final java.util.concurrent.CountDownLatch wideHls8 = new java.util.concurrent.CountDownLatch(8);
+    final java.util.concurrent.CountDownLatch wideHls16 =
+        new java.util.concurrent.CountDownLatch(16);
+    final java.util.concurrent.CountDownLatch wideRange8 =
+        new java.util.concurrent.CountDownLatch(8);
+    final java.util.concurrent.CountDownLatch wideRange16 =
+        new java.util.concurrent.CountDownLatch(16);
     volatile Map<String, String> crossHeaders = new HashMap<>();
     final byte[] pdf =
         "%PDF-1.4\nWebSurf byte-preservation fixture\n%%EOF\n".getBytes(StandardCharsets.UTF_8);
@@ -289,7 +509,15 @@ public class DownloadEngineInstrumentedTest {
                + "#EXT-X-STREAM-INF:BANDWIDTH=500000,RESOLUTION=320x180,AUDIO=\"main\"\n"
                + "video.m3u8\n")
               .getBytes(StandardCharsets.UTF_8));
+      for (int i = 0; i < large.length; i++) {
+        large[i] = (byte) (i * 31 + i / 65536);
+        changed[i] = (byte) ~large[i];
+      }
+      for (int i = 0; i < wide.length; i++) wide[i] = (byte) (i * 37 + i / 8192);
       String vod = new String(files.get("/vod.m3u8"), StandardCharsets.UTF_8);
+      files.put(
+          "/parallel.m3u8",
+          vod.replace("segment", "delayed-segment").getBytes(StandardCharsets.UTF_8));
       byte[] key = new byte[16];
       Arrays.fill(key, (byte) 42);
       files.put("/key.bin", key);
@@ -320,6 +548,24 @@ public class DownloadEngineInstrumentedTest {
       files.put("/aes.m3u8", aes.getBytes(StandardCharsets.UTF_8));
       files.put("/ranges.m3u8", (ranges + "#EXT-X-ENDLIST\n").getBytes(StandardCharsets.UTF_8));
       files.put("/combined.ts", joined.toByteArray());
+      byte[] allSegments = joined.toByteArray();
+      int packets = allSegments.length / 188;
+      for (int concurrency : new int[] {8, 16}) {
+        StringBuilder widePlaylist =
+            new StringBuilder("#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:0\n");
+        for (int i = 0; i < 16; i++) {
+          int from = (packets * i / 16) * 188;
+          int to = i == 15 ? allSegments.length : (packets * (i + 1) / 16) * 188;
+          String part =
+              String.format(java.util.Locale.ROOT, "wide-segment-%d-%02d.ts", concurrency, i);
+          files.put("/" + part, Arrays.copyOfRange(allSegments, from, to));
+          widePlaylist.append("#EXTINF:0.25,\n").append(part).append('\n');
+        }
+        widePlaylist.append("#EXT-X-ENDLIST\n");
+        files.put(
+            "/wide-" + concurrency + ".m3u8",
+            widePlaylist.toString().getBytes(StandardCharsets.UTF_8));
+      }
       files.put("/live.m3u8", vod.replace("#EXT-X-ENDLIST", "").getBytes(StandardCharsets.UTF_8));
       files.put("/document", pdf);
       threads.execute(
@@ -340,6 +586,7 @@ public class DownloadEngineInstrumentedTest {
     }
 
     private void serve(Socket client) {
+      boolean countedRange = false, countedHls = false;
       try (Socket s = client) {
         BufferedReader reader =
             new BufferedReader(
@@ -411,6 +658,74 @@ public class DownloadEngineInstrumentedTest {
           }
           return;
         }
+        if (path.startsWith("/range-")) {
+          boolean range = headers.containsKey("range");
+          int full = range ? fullRequests.get() : fullRequests.incrementAndGet();
+          if (range) {
+            rangeRequests.incrementAndGet();
+            countedRange = true;
+            maxRanges.accumulateAndGet(activeRanges.incrementAndGet(), Math::max);
+          }
+          boolean change = path.equals("/range-changed") && (range || full > 1);
+          byte[] entity = path.startsWith("/range-wide-") ? wide : change ? changed : large;
+          byte[] payload = entity;
+          String response = "HTTP/1.1 200 OK\r\n";
+          if (range && !path.equals("/range-ignore")) {
+            assertNotNull("Range transfer must be conditional", headers.get("if-range"));
+            String[] bits = headers.get("range").substring(6).split("-");
+            int start = Integer.parseInt(bits[0]), end = Integer.parseInt(bits[1]);
+            payload = Arrays.copyOfRange(entity, start, end + 1);
+            response =
+                "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes "
+                    + start
+                    + "-"
+                    + end
+                    + "/"
+                    + (entity.length + (path.equals("/range-wrong-total") ? 1 : 0))
+                    + "\r\n";
+          }
+          String etag =
+              path.equals("/range-weak") ? "W/\"fixture\"" : change ? "\"changed\"" : "\"fixture\"";
+          response +=
+              "Content-Type: application/octet-stream\r\nContent-Length: "
+                  + payload.length
+                  + "\r\nAccept-Ranges: bytes\r\nETag: "
+                  + etag
+                  + "\r\nConnection: close\r\n\r\n";
+          out.write(response.getBytes(StandardCharsets.US_ASCII));
+          out.flush();
+          if (range) {
+            if (path.startsWith("/range-wide-")) {
+              java.util.concurrent.CountDownLatch gate =
+                  path.endsWith("-16") ? wideRange16 : wideRange8;
+              gate.countDown();
+              if (!gate.await(8, java.util.concurrent.TimeUnit.SECONDS))
+                throw new java.io.IOException("Range concurrency gate timed out");
+            } else Thread.sleep(120);
+            activeRanges.decrementAndGet();
+            countedRange = false;
+          }
+          out.write(payload);
+          out.flush();
+          return;
+        }
+        String delayed = null;
+        if (path.startsWith("/wide-segment-")) {
+          countedHls = true;
+          maxHls.accumulateAndGet(activeHls.incrementAndGet(), Math::max);
+          java.util.concurrent.CountDownLatch gate =
+              path.startsWith("/wide-segment-16-") ? wideHls16 : wideHls8;
+          gate.countDown();
+          if (!gate.await(8, java.util.concurrent.TimeUnit.SECONDS))
+            throw new java.io.IOException("HLS concurrency gate timed out");
+        }
+        if (path.startsWith("/delayed-segment")) {
+          delayed = path;
+          countedHls = true;
+          maxHls.accumulateAndGet(activeHls.incrementAndGet(), Math::max);
+          Thread.sleep(path.contains("segment00") ? 400 : 80);
+          path = path.replace("delayed-segment", "segment");
+        }
         byte[] body = files.get(path);
         if (body == null) {
           out.write(
@@ -443,9 +758,17 @@ public class DownloadEngineInstrumentedTest {
               "Content-Disposition: attachment; filename=doc.pdf;"
                   + " filename*=UTF-8''%E6%B5%8B%E8%AF%95%E6%96%87%E6%A1%A3.pdf\r\n";
         out.write((response + "Connection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
+        if (countedHls) {
+          activeHls.decrementAndGet();
+          countedHls = false;
+        }
         out.write(body);
         out.flush();
+        if (delayed != null) finishedHls.add(delayed);
       } catch (Exception ignored) {
+      } finally {
+        if (countedRange) activeRanges.decrementAndGet();
+        if (countedHls) activeHls.decrementAndGet();
       }
     }
 

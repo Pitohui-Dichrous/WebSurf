@@ -86,10 +86,13 @@ final class ScopedHttpDataSource extends BaseDataSource {
         connection.setConnectTimeout(15000);
         connection.setReadTimeout(20000);
         connection.setRequestProperty("Accept-Encoding", "identity");
-        for (Map.Entry<String, String> e : scoped(source, url, headers).entrySet())
+        Map<String, String> scopedHeaders = scoped(source, url, headers);
+        for (Map.Entry<String, String> e : scopedHeaders.entrySet())
           connection.setRequestProperty(e.getKey(), e.getValue());
+        boolean explicitCookie =
+            scopedHeaders.keySet().stream().anyMatch(name -> name.equalsIgnoreCase("Cookie"));
         String cookie = CookieManager.getInstance().getCookie(url);
-        if (cookie != null && !cookie.trim().isEmpty())
+        if (!explicitCookie && cookie != null && !cookie.trim().isEmpty())
           connection.setRequestProperty("Cookie", cookie);
         if (spec.position > 0 || spec.length != C.LENGTH_UNSET)
           connection.setRequestProperty(

@@ -7,13 +7,18 @@ import zipfile
 root = Path(__file__).resolve().parent.parent
 dist = root / "dist"
 dist.mkdir(exist_ok=True)
-apk = dist / "WebSurf-0.4.0.apk"
+version = "0.5.0"
+apk = dist / f"WebSurf-{version}.apk"
 assert apk.is_file(), "Build and copy the release APK first"
-archive = dist / "WebSurf-0.4.0-source.zip"
+archive = dist / f"WebSurf-{version}-source.zip"
+verification = json.loads((root / "docs/release-verification.json").read_text(encoding="utf-8"))
+assert verification.get("version") == version, "Update release verification for this version first"
 files = [root / name for name in (
     "README.md", "THIRD_PARTY_NOTICES.md", "build.gradle", "settings.gradle",
     "gradle.properties", "gradlew", "gradlew.bat", ".gitignore", ".gitattributes", "app/build.gradle",
     "docs/USAGE.md", "docs/release-verification.json")]
+# Public docs are explicitly listed above. Assets include the README image and Lucide originals,
+# provenance and licenses; private analysis and internal verification logs are not source inputs.
 for folder in ("app/src", "gradle", "scripts", "assets"):
     files.extend(p for p in (root / folder).rglob("*") if p.is_file() and "__pycache__" not in p.parts
         and not any(parent.name == "qa" and parent.parent.name == "screenshots"
@@ -31,8 +36,8 @@ def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 artifacts = [{"name": p.name, "bytes": p.stat().st_size, "sha256": sha(p)} for p in (apk, archive)]
 (dist / "SHA256SUMS.txt").write_text("".join(f"{a['sha256']}  {a['name']}\n" for a in artifacts), encoding="utf-8")
-manifest = {"version": "0.4.0", "package": "io.websurf.app", "min_android": "8.0",
+manifest = {"version": version, "package": "io.websurf.app", "min_android": "8.0",
     "artifacts": artifacts, "source_entries": source_count, "source_zip_crc": "passed",
-    "verification": json.loads((root / "docs/release-verification.json").read_text(encoding="utf-8"))}
+    "verification": verification}
 (dist / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2)+"\n", encoding="utf-8")
 print(json.dumps(manifest, ensure_ascii=False, indent=2))

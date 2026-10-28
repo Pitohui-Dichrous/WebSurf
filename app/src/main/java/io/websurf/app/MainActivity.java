@@ -55,7 +55,19 @@ public class MainActivity extends Activity {
   boolean logicalMuted;
   boolean immersivePlayer;
   int previousOrientation;
-  ImageButton back, forward, refresh;
+  ImageButton back, forward, refresh, downloadsButton;
+  TextView downloadBadge;
+  LinearLayout downloadFeedback;
+  final Map<String, String> downloadStates = new HashMap<>();
+  boolean downloadReceiverRegistered;
+  DownloadStore.Job pendingDownloadFeedback;
+  final BroadcastReceiver downloadReceiver =
+      new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+          refreshDownloadFeedback();
+        }
+      };
   ExoPlayer player;
   PlayerView playerView;
   WebResource playing;
@@ -64,16 +76,10 @@ public class MainActivity extends Activity {
   long playerStartPosition;
   boolean playerRenderedFrame;
   boolean nativeAttachmentReady, requestedPlayIntent;
-  PendingQuality pendingQuality;
-
-  record PendingQuality(
-      BrowserTab tab, long epoch, String key, long sourceVersion, String url, boolean playIntent) {}
-
   ValueCallback<Uri[]> fileCallback;
   WebChromeClient.CustomViewCallback customViewCallback;
   String snifferScript;
   Dialog activeSheet;
-  AlertDialog qualityDialog;
   Runnable sheetRefresh;
   final Map<String, android.webkit.WebView> popupViews = new HashMap<>();
 
@@ -94,6 +100,14 @@ public class MainActivity extends Activity {
     }
     createShell();
     DownloadService.recoverInterrupted(this);
+    for (DownloadStore.Job j : DownloadStore.list(this)) downloadStates.put(j.id, j.state);
+    androidx.core.content.ContextCompat.registerReceiver(
+        this,
+        downloadReceiver,
+        new IntentFilter(DownloadService.ACTION_CHANGED),
+        androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED);
+    downloadReceiverRegistered = true;
+    refreshDownloadBadge();
     String initial = getIntent().getDataString();
     if (state != null && initial == null) {
       ArrayList<String> urls = state.getStringArrayList("tabs");
@@ -147,9 +161,18 @@ public class MainActivity extends Activity {
             current.web.reload();
           }
         });
-    ImageButton downloads = Ui.icon(this, "download", "下载任务");
-    topBar.addView(downloads, lp(48, 48));
-    downloads.setOnClickListener(v -> showDownloads());
+    FrameLayout downloadControl = new FrameLayout(this);
+    downloadsButton = Ui.icon(this, "download", "下载任务");
+    downloadControl.addView(downloadsButton, new FrameLayout.LayoutParams(dp(48), dp(48)));
+    downloadBadge = Ui.text(this, "", 10, Color.WHITE);
+    downloadBadge.setGravity(Gravity.CENTER);
+    downloadBadge.setBackground(Ui.shape(this, Ui.ACCENT, 8));
+    FrameLayout.LayoutParams badgePosition =
+        new FrameLayout.LayoutParams(dp(18), dp(16), Gravity.TOP | Gravity.END);
+    downloadControl.addView(downloadBadge, badgePosition);
+    downloadBadge.setVisibility(View.GONE);
+    topBar.addView(downloadControl, lp(48, 48));
+    downloadsButton.setOnClickListener(v -> showDownloads());
     shell.addView(topBar, new LinearLayout.LayoutParams(-1, -2));
     progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
     progress.setMax(100);
@@ -168,7 +191,7 @@ public class MainActivity extends Activity {
     takeoverButton.setTextSize(12);
     takeoverButton.setAllCaps(false);
     takeoverButton.setBackground(Ui.shape(this, Ui.SURFACE, 8));
-    resourceBar.addView(takeoverButton, lp(96, 44));
+    resourceBar.addView(takeoverButton, lp(96, 48));
     takeoverButton.setOnClickListener(v -> toggleTakeover());
     ImageButton resBtn = Ui.icon(this, "video", "查看网页资源");
     resourceBar.addView(resBtn, lp(48, 48));
@@ -342,7 +365,6 @@ public class MainActivity extends Activity {
         new WebViewClient() {
           @Override
           public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
-            if (pendingQuality != null && pendingQuality.tab() == tab) pendingQuality = null;
             tab.epoch++;
             tab.playGeneration++;
             tab.documents.clear();
@@ -558,20 +580,6 @@ public class MainActivity extends Activity {
         observe(
             tab, url, "video/*", "网页视频", Collections.emptyMap(), target.width, target.height, page);
     bindVideoResource(tab, target, resource, "takeover".equals(type));
-    PendingQuality quality = pendingQuality;
-    if ("source".equals(type)
-        && event.optBoolean("qualitySwitch")
-        && quality != null
-        && quality.tab() == tab
-        && quality.epoch() == tab.epoch
-        && quality.key().equals(key)
-        && quality.sourceVersion() < target.sourceVersion
-        && quality.url().equals(target.url)) {
-      pendingQuality = null;
-      target.paused = !quality.playIntent();
-      openTarget(tab, target, quality.playIntent());
-      return;
-    }
     if (active
         && "attached".equals(type)
         && player != null
@@ -762,6 +770,7 @@ public class MainActivity extends Activity {
 
   Map<String, String> headersFor(WebResource r) {
     Map<String, String> h = new LinkedHashMap<>(r.headers);
+    if (r.frozenDownloadHeaders) return h;
     if (current != null) h.put("User-Agent", current.web.getSettings().getUserAgentString());
     if (!r.pageUrl.isBlank() && !h.containsKey("Referer")) h.put("Referer", r.pageUrl);
     String cookie = CookieManager.getInstance().getCookie(r.url);
@@ -769,9 +778,15 @@ public class MainActivity extends Activity {
     return h;
   }
 
+  Map<String, String> mediaHeadersFor(WebResource r) {
+    Map<String, String> headers = headersFor(r);
+    headers.putIfAbsent(MediaTransferCache.SCOPE_HEADER, r.transferScope);
+    headers.putIfAbsent("Cookie", "");
+    return headers;
+  }
+
   void selectTab(BrowserTab tab) {
     if (current == tab) return;
-    pendingQuality = null;
     closePlayer(false, false);
     if (current != null) current.web.onPause();
     current = tab;
@@ -875,12 +890,6 @@ public class MainActivity extends Activity {
     target.suppressed = false;
     target.nativeFailed = false;
     tab.selectedVideo = target.key();
-    int preferred = prefs.getInt("preferred_quality", 0);
-    VideoTarget.QualitySource desired = preferredSource(target, preferred);
-    if (desired != null && !desired.url().equals(target.url)) {
-      requestPageQuality(tab, target, desired, explicit || !target.paused);
-      return;
-    }
     VideoChrome.Mode next =
         activeTarget != null && activeTarget.key().equals(target.key())
             ? playerMode
@@ -912,13 +921,16 @@ public class MainActivity extends Activity {
     appliedGain = logicalMuted ? 0 : logicalVolume;
     playerMode = mode;
     ScopedHttpDataSource.Factory http =
-        new ScopedHttpDataSource.Factory(resource.url, headersFor(resource));
+        new ScopedHttpDataSource.Factory(resource.url, mediaHeadersFor(resource));
     player =
         new ExoPlayer.Builder(this)
             .setMediaSourceFactory(
                 new DefaultMediaSourceFactory(this)
                     .setDataSourceFactory(
-                        new androidx.media3.datasource.DefaultDataSource.Factory(this, http)))
+                        new androidx.media3.datasource.DefaultDataSource.Factory(
+                            this,
+                            MediaTransferCache.playback(
+                                this, resource.url, mediaHeadersFor(resource), http))))
             .build();
     player.setAudioAttributes(
         new AudioAttributes.Builder()
@@ -948,11 +960,6 @@ public class MainActivity extends Activity {
               @Override
               public void onSelectSource() {
                 showVideoTargets();
-              }
-
-              @Override
-              public void onSelectQuality() {
-                showQualityOptions();
               }
 
               @Override
@@ -1030,12 +1037,6 @@ public class MainActivity extends Activity {
           public void onRenderedFirstFrame() {
             if (session == player) playerRenderedFrame = true;
             handler.postDelayed(() -> capturePlayingPreview(session, resource), 120);
-          }
-
-          @Override
-          public void onTracksChanged(Tracks tracks) {
-            if (session == player)
-              QualityOptions.applyPreferredHeight(session, prefs.getInt("preferred_quality", 0));
           }
 
           @Override
@@ -1304,15 +1305,10 @@ public class MainActivity extends Activity {
   }
 
   void closePlayer(boolean returnToWeb, boolean suppress, boolean failed) {
-    if (qualityDialog != null) {
-      qualityDialog.dismiss();
-      qualityDialog = null;
-    }
     BrowserTab owner = playerTab;
     VideoTarget target = activeTarget;
     long position = player == null ? 0 : player.getCurrentPosition();
     if (failed && !playerRenderedFrame) position = Math.max(position, playerStartPosition);
-    if (returnToWeb && !failed) pendingQuality = null;
     boolean resume =
         returnToWeb
             && player != null
@@ -1383,125 +1379,6 @@ public class MainActivity extends Activity {
     showVideoTargets();
   }
 
-  static VideoTarget.QualitySource preferredSource(VideoTarget target, int preferred) {
-    if (preferred <= 0) return null;
-    VideoTarget.QualitySource below = null, lowest = null;
-    for (VideoTarget.QualitySource source : target.qualitySources) {
-      int resolution = source.resolution();
-      if (resolution <= 0) continue;
-      if (lowest == null || resolution < lowest.resolution()) lowest = source;
-      if (resolution <= preferred && (below == null || resolution > below.resolution()))
-        below = source;
-    }
-    return below == null ? lowest : below;
-  }
-
-  void requestPageQuality(
-      BrowserTab tab, VideoTarget target, VideoTarget.QualitySource choice, boolean playIntent) {
-    if (choice.url().equals(target.url)) return;
-    PendingQuality request =
-        new PendingQuality(
-            tab, tab.epoch, target.key(), target.sourceVersion, choice.url(), playIntent);
-    pendingQuality = request;
-    double time =
-        player != null
-                && playerTab == tab
-                && activeTarget != null
-                && activeTarget.key().equals(target.key())
-            ? player.getCurrentPosition() / 1000.0
-            : target.time;
-    try {
-      command(
-          tab,
-          target,
-          "quality",
-          new JSONObject()
-              .put("url", choice.url())
-              .put("time", time)
-              .put("playIntent", playIntent));
-    } catch (JSONException ignored) {
-      pendingQuality = null;
-    }
-    handler.postDelayed(
-        () -> {
-          if (pendingQuality != request) return;
-          pendingQuality = null;
-          if (tab == current && tab.epoch == request.epoch()) toast("网页未切换画质，可使用网页画质入口");
-        },
-        4000);
-  }
-
-  void showQualityOptions() {
-    if (player == null) return;
-    if (qualityDialog != null) qualityDialog.dismiss();
-    ExoPlayer session = player;
-    BrowserTab owner = playerTab;
-    VideoTarget target =
-        activeTarget == null || owner == null ? null : owner.videos.get(activeTarget.key());
-    QualityOptions.Snapshot nativeOptions = QualityOptions.snapshot(session);
-    ArrayList<String> labels = new ArrayList<>();
-    ArrayList<Runnable> actions = new ArrayList<>();
-    int selected = -1;
-    if (target != null
-        && target.qualitySources.stream().anyMatch(q -> !q.url().equals(target.url))
-        && !nativeOptions.hasMultipleQualities()) {
-      if (target.qualitySources.stream().noneMatch(q -> q.url().equals(target.url))) {
-        labels.add("当前 · " + nativeOptions.currentLabel());
-        actions.add(() -> {});
-        selected = 0;
-      }
-      for (VideoTarget.QualitySource choice : target.qualitySources) {
-        if (choice.url().equals(target.url)) selected = labels.size();
-        labels.add(choice.label() + " · 网页");
-        actions.add(
-            () -> {
-              VideoTarget latest = owner.videos.get(target.key());
-              if (player != session
-                  || latest == null
-                  || latest.sourceVersion != target.sourceVersion) return;
-              prefs.edit().putInt("preferred_quality", Math.max(0, choice.resolution())).apply();
-              requestPageQuality(owner, latest, choice, session.getPlayWhenReady());
-            });
-      }
-    } else {
-      selected = nativeOptions.selectedIndex();
-      for (QualityOptions.Choice choice : nativeOptions.choices()) {
-        labels.add(choice.label());
-        actions.add(
-            () -> {
-              if (player != session) return;
-              prefs
-                  .edit()
-                  .putInt("preferred_quality", choice.automatic() ? 0 : choice.resolution())
-                  .apply();
-              QualityOptions.apply(session, choice);
-            });
-      }
-    }
-    AlertDialog.Builder dialog =
-        new AlertDialog.Builder(
-                new android.view.ContextThemeWrapper(
-                    this, Ui.isDark(this) ? R.style.AppThemeDark : R.style.AppTheme))
-            .setTitle("画质")
-            .setNegativeButton("关闭", null);
-    if (labels.isEmpty()) dialog.setMessage("当前视频未提供可选清晰度");
-    else
-      dialog.setSingleChoiceItems(
-          labels.toArray(new String[0]),
-          selected,
-          (view, index) -> {
-            view.dismiss();
-            actions.get(index).run();
-          });
-    if (target != null)
-      dialog.setNeutralButton(
-          "网页画质",
-          (view, which) -> {
-            if (player == session) closePlayer(true, true);
-          });
-    qualityDialog = dialog.show();
-  }
-
   void showVideoTargets() {
     LinearLayout body = scrollBody(sheet("选择网页视频"));
     if (current == null || current.videos.isEmpty()) {
@@ -1536,9 +1413,9 @@ public class MainActivity extends Activity {
     box.setBackground(Ui.shape(this, Ui.BG, 12));
     LinearLayout header = new LinearLayout(this);
     header.setGravity(Gravity.CENTER_VERTICAL);
-    TextView heading = Ui.text(this, title, 20, Ui.TEXT);
+    TextView heading = Ui.text(this, title, 17, Ui.TEXT);
     heading.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-    header.addView(heading, new LinearLayout.LayoutParams(0, dp(56), 1));
+    header.addView(heading, new LinearLayout.LayoutParams(0, dp(48), 1));
     ImageButton close = Ui.icon(this, "close", "关闭" + title);
     header.addView(close, lp(48, 48));
     close.setOnClickListener(v -> dialog.dismiss());
@@ -1568,20 +1445,30 @@ public class MainActivity extends Activity {
   }
 
   LinearLayout scrollBody(LinearLayout box) {
-    ScrollView scroll = new ScrollView(this);
+    ScrollView scroll =
+        new ScrollView(this) {
+          @Override
+          protected void onMeasure(int widthSpec, int heightSpec) {
+            int limit =
+                Math.min(
+                    dp(470),
+                    Math.max(
+                        dp(96),
+                        root.getHeight()
+                            - root.getPaddingTop()
+                            - root.getPaddingBottom()
+                            - dp(180)));
+            if (View.MeasureSpec.getMode(heightSpec) != View.MeasureSpec.UNSPECIFIED)
+              limit = Math.min(limit, View.MeasureSpec.getSize(heightSpec));
+            super.onMeasure(
+                widthSpec, View.MeasureSpec.makeMeasureSpec(limit, View.MeasureSpec.AT_MOST));
+          }
+        };
     scroll.setFillViewport(false);
     LinearLayout body = new LinearLayout(this);
     body.setOrientation(LinearLayout.VERTICAL);
     scroll.addView(body);
-    box.addView(
-        scroll,
-        new LinearLayout.LayoutParams(
-            -1,
-            Math.min(
-                dp(470),
-                Math.max(
-                    dp(96),
-                    root.getHeight() - root.getPaddingTop() - root.getPaddingBottom() - dp(200)))));
+    box.addView(scroll, new LinearLayout.LayoutParams(-1, -2));
     return body;
   }
 
@@ -1594,7 +1481,9 @@ public class MainActivity extends Activity {
 
   Button action(LinearLayout box, String title, Runnable callback) {
     Button b = Ui.button(this, title, false);
-    box.addView(b, new LinearLayout.LayoutParams(-1, dp(48)));
+    LinearLayout.LayoutParams actionSpace = new LinearLayout.LayoutParams(-1, dp(48));
+    actionSpace.topMargin = dp(6);
+    box.addView(b, actionSpace);
     b.setOnClickListener(v -> callback.run());
     return b;
   }
@@ -1641,8 +1530,7 @@ public class MainActivity extends Activity {
             p.bottomMargin = dp(8);
             body.addView(row, p);
           }
-          if (shown == 0)
-            note(body, "尚未发现" + ("全部".equals(filter[0]) ? "资源" : filter[0]) + "，播放或浏览网页后会自动更新。");
+          if (shown == 0) note(body, "暂无" + ("全部".equals(filter[0]) ? "资源" : filter[0]));
         };
     for (String name : new String[] {"视频", "音频", "图片", "其他", "全部"}) {
       Button b = Ui.button(this, name, name.equals(initialFilter));
@@ -1704,116 +1592,218 @@ public class MainActivity extends Activity {
   }
 
   void confirmDownload(WebResource r) {
-    String explanation = r.isHls() ? "将下载可用的最高画质并合并为 MP4。若地址是单一画质，则保留该画质。" : "保存到 Download/WebSurf";
-    new AlertDialog.Builder(this)
-        .setTitle("下载" + r.kind)
-        .setMessage(r.label() + "\n\n" + explanation)
+    for (DownloadStore.Job existing : DownloadStore.list(this))
+      if (existing.active() && existing.url.equals(r.url)) {
+        showDownloadFeedback("正在下载", existing);
+        return;
+      }
+    new AlertDialog.Builder(
+            new ContextThemeWrapper(
+                this, Ui.isDark(this) ? R.style.AppThemeDark : R.style.AppTheme))
+        .setTitle("下载")
+        .setMessage(r.label())
         .setNegativeButton("取消", null)
         .setPositiveButton(
             "下载",
             (d, w) -> {
               if (Build.VERSION.SDK_INT >= 33
                   && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
-                      != PackageManager.PERMISSION_GRANTED)
+                      != PackageManager.PERMISSION_GRANTED
+                  && !prefs.getBoolean("notification_requested", false)) {
+                prefs.edit().putBoolean("notification_requested", true).apply();
                 requestPermissions(new String[] {Manifest.permission.POST_NOTIFICATIONS}, 42);
+              }
               try {
-                DownloadService.enqueue(
-                    this, r.url, r.title.isBlank() ? r.label() : r.title, headersFor(r), r.mime);
-                toast("已加入下载");
-              } catch (Exception e) {
-                showError("无法开始下载", e);
+                String id =
+                    DownloadService.enqueue(
+                        this,
+                        r.url,
+                        r.title.isBlank() ? r.label() : r.title,
+                        mediaHeadersFor(r),
+                        r.mime);
+                DownloadStore.Job job = DownloadStore.get(this, id);
+                if (job != null) {
+                  downloadStates.put(id, job.state);
+                  showDownloadFeedback(
+                      job.active() ? "已加入下载" : "completed".equals(job.state) ? "下载完成" : "下载失败",
+                      job);
+                }
+                refreshDownloadBadge();
+              } catch (Exception error) {
+                showError("无法开始下载", error);
               }
             })
         .show();
   }
 
+  void refreshDownloadBadge() {
+    if (downloadBadge == null) return;
+    long active = DownloadStore.list(this).stream().filter(DownloadStore.Job::active).count();
+    downloadBadge.setText(active > 9 ? "9+" : String.valueOf(active));
+    downloadBadge.setVisibility(active > 0 ? View.VISIBLE : View.GONE);
+    downloadsButton.setContentDescription(active > 0 ? "下载任务，" + active + "项进行中" : "下载任务");
+  }
+
+  void refreshDownloadFeedback() {
+    for (DownloadStore.Job job : DownloadStore.list(this)) {
+      String before = downloadStates.put(job.id, job.state);
+      if (Objects.equals(before, job.state)) continue;
+      String message =
+          "completed".equals(job.state)
+              ? "下载完成"
+              : "failed".equals(job.state)
+                  ? "下载失败"
+                  : "downloading".equals(job.state) && "queued".equals(before) ? "开始下载" : null;
+      if (message != null) {
+        if (resumed) showDownloadFeedback(message, job);
+        else if (!job.active()) pendingDownloadFeedback = job;
+      }
+    }
+    refreshDownloadBadge();
+  }
+
+  void showDownloadFeedback(String message, DownloadStore.Job job) {
+    if (downloadFeedback != null) root.removeView(downloadFeedback);
+    LinearLayout bar = new LinearLayout(this);
+    downloadFeedback = bar;
+    bar.setTag("download-feedback");
+    bar.setGravity(Gravity.CENTER_VERTICAL);
+    bar.setPadding(dp(12), dp(4), dp(4), dp(4));
+    bar.setBackground(Ui.shape(this, Ui.SOFT_ACCENT, 6));
+    bar.setElevation(dp(6));
+    TextView label = Ui.text(this, message + " · " + job.title, 13, Ui.TEXT);
+    label.setMaxLines(2);
+    label.setEllipsize(TextUtils.TruncateAt.END);
+    bar.addView(label, new LinearLayout.LayoutParams(0, -2, 1));
+    Button view = Ui.button(this, "查看", false);
+    bar.addView(view, lp(64, 48));
+    view.setOnClickListener(
+        v -> {
+          root.removeView(bar);
+          showDownloads();
+        });
+    ImageButton close = Ui.icon(this, "close", "关闭提示");
+    bar.addView(close, lp(48, 48));
+    close.setOnClickListener(v -> root.removeView(bar));
+    FrameLayout.LayoutParams at = new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM);
+    at.setMargins(dp(12), 0, dp(12), dp(112));
+    root.addView(bar, at);
+    bar.announceForAccessibility(message + "，" + job.title);
+    handler.postDelayed(
+        () -> {
+          if (bar.getParent() == root) root.removeView(bar);
+        },
+        6000);
+  }
+
   void showDownloads() {
-    LinearLayout box = sheet("下载");
-    LinearLayout body = scrollBody(box);
-    String[] fingerprint = {""};
+    LinearLayout body = scrollBody(sheet("下载"));
+    String requestedTask = getIntent().getStringExtra("download_id");
+    getIntent().removeExtra("download_id");
+    Map<String, DownloadTaskRow> rows = new LinkedHashMap<>();
+    DownloadTaskRow.Actions callbacks =
+        new DownloadTaskRow.Actions() {
+          public void open(DownloadStore.Job job) {
+            openDownloaded(job);
+          }
+
+          public void preview(DownloadStore.Job job) {
+            openDownloadPreview(job);
+          }
+
+          public void retry(DownloadStore.Job job) {
+            DownloadService.retry(MainActivity.this, job.id);
+            showDownloadFeedback("已加入下载", job);
+          }
+
+          public void cancel(DownloadStore.Job job) {
+            DownloadService.cancel(MainActivity.this, job.id);
+          }
+
+          public void remove(DownloadStore.Job job) {
+            new AlertDialog.Builder(MainActivity.this)
+                .setTitle("移除记录？")
+                .setMessage("已下载的文件会保留")
+                .setNegativeButton("取消", null)
+                .setPositiveButton(
+                    "移除",
+                    (d, w) -> {
+                      DownloadStore.remove(MainActivity.this, job.id);
+                      View row = rows.remove(job.id);
+                      if (row != null) body.removeView(row);
+                    })
+                .show();
+          }
+        };
     Runnable render =
         () -> {
           List<DownloadStore.Job> jobs = DownloadStore.list(this);
-          StringBuilder key = new StringBuilder();
-          for (DownloadStore.Job j : jobs)
-            key.append(j.id).append(j.state).append(j.progress).append(j.error);
-          if (key.toString().equals(fingerprint[0]) && body.getChildCount() > 0) return;
-          fingerprint[0] = key.toString();
-          body.removeAllViews();
           if (jobs.isEmpty()) {
-            note(body, "还没有下载任务");
+            if (rows.isEmpty() && body.getChildCount() == 0) note(body, "暂无下载");
             return;
           }
-          for (DownloadStore.Job j : jobs) {
-            LinearLayout row = new LinearLayout(this);
-            row.setOrientation(LinearLayout.VERTICAL);
-            row.setPadding(dp(12), dp(12), dp(12), dp(12));
-            row.setBackground(Ui.shape(this, Ui.SURFACE, 8));
-            TextView title = Ui.text(this, j.title, 14, Ui.TEXT);
-            title.setMaxLines(2);
-            row.addView(title);
-            String status =
-                switch (j.state) {
-                  case "queued" -> "等待下载";
-                  case "downloading" -> "下载中";
-                  case "converting" -> "正在合并 MP4";
-                  case "completed" -> "已完成";
-                  case "cancelled" -> "已取消";
-                  default -> "下载失败";
-                };
-            note(
-                row,
-                status
-                    + (("downloading".equals(j.state) || "converting".equals(j.state))
-                        ? " · " + j.progress + "%"
-                        : "")
-                    + (j.bytes > 0 ? " · " + formatBytes(j.bytes) : ""));
-            if (!"completed".equals(j.state)
-                && !"failed".equals(j.state)
-                && !"cancelled".equals(j.state)) {
-              ProgressBar bar =
-                  new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
-              bar.setProgress(j.progress);
-              bar.setIndeterminate(j.progress < 0);
-              bar.setProgressTintList(android.content.res.ColorStateList.valueOf(Ui.ACCENT));
-              row.addView(bar, new LinearLayout.LayoutParams(-1, dp(4)));
+          if (rows.isEmpty()) body.removeAllViews();
+          for (int i = 0; i < jobs.size(); i++) {
+            DownloadStore.Job job = jobs.get(i);
+            DownloadTaskRow row = rows.get(job.id);
+            if (row == null) {
+              row = new DownloadTaskRow(this, callbacks);
+              rows.put(job.id, row);
+              LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
+              params.bottomMargin = dp(8);
+              body.addView(row, Math.min(i, body.getChildCount()), params);
             }
-            if (j.error != null && !j.error.isBlank()) {
-              TextView error = note(row, j.error);
-              error.setTextIsSelectable(true);
-            }
-            if ("completed".equals(j.state)) action(row, "打开文件", () -> openDownloaded(j));
-            else if ("failed".equals(j.state) || "cancelled".equals(j.state))
-              action(
-                  row,
-                  "重试",
-                  () -> {
-                    DownloadService.retry(this, j.id);
-                    fingerprint[0] = "";
-                  });
-            else
-              action(
-                  row,
-                  "取消",
-                  () -> {
-                    DownloadService.cancel(this, j.id);
-                    fingerprint[0] = "";
-                  });
-            LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(-1, -2);
-            p.bottomMargin = dp(8);
-            body.addView(row, p);
+            row.bind(job);
           }
         };
     render.run();
+    if (requestedTask != null && rows.containsKey(requestedTask)) {
+      DownloadTaskRow selected = rows.get(requestedTask);
+      body.postDelayed(
+          () -> {
+            if (selected.getParent() == body) {
+              ((ScrollView) body.getParent()).smoothScrollTo(0, selected.getTop());
+              selected.announceForAccessibility("下载任务");
+            }
+          },
+          220);
+    }
+    Dialog owner = activeSheet;
     sheetRefresh =
         new Runnable() {
           public void run() {
-            if (activeSheet == null) return;
+            if (activeSheet != owner) return;
             render.run();
             handler.postDelayed(this, 750);
           }
         };
     handler.postDelayed(sheetRefresh, 750);
+  }
+
+  void openDownloadPreview(DownloadStore.Job job) {
+    if (activeSheet != null) activeSheet.dismiss();
+    long position = 0;
+    if (player != null
+        && playing != null
+        && playing.url.equals(job.url)
+        && Objects.equals(
+            mediaHeadersFor(playing).get(MediaTransferCache.SCOPE_HEADER),
+            job.headers.get(MediaTransferCache.SCOPE_HEADER)))
+      position = player.getCurrentPosition();
+    WebResource resource = new WebResource(job.url);
+    resource.title = job.title;
+    resource.mime = job.mimeType;
+    resource.classify();
+    resource.headers.putAll(job.headers);
+    resource.frozenDownloadHeaders = true;
+    startPlayer(resource, position, null, VideoChrome.Mode.FLOATING, true);
+    if (player != null && resource.isHls())
+      player.setTrackSelectionParameters(
+          player
+              .getTrackSelectionParameters()
+              .buildUpon()
+              .setForceHighestSupportedBitrate(true)
+              .build());
   }
 
   void openDownloaded(DownloadStore.Job job) {
@@ -1945,32 +1935,43 @@ public class MainActivity extends Activity {
           prefs.edit().putBoolean("auto_play", checked).apply();
           if (!checked) closePlayer(true, true);
         });
-    note(body, "点击网页视频后原位接管。关闭后可选画质，再点接管播放。");
-    int preferred = prefs.getInt("preferred_quality", 0);
+    boolean notifications = getSystemService(NotificationManager.class).areNotificationsEnabled();
     action(
         body,
-        "首选画质 · " + (preferred <= 0 ? "自动" : preferred + "p"),
+        "下载通知 · " + (notifications ? "已开启" : "未开启"),
         () -> {
-          String[] labels = {"自动 / 跟随网页", "360p", "480p", "720p", "1080p", "1440p", "2160p"};
-          int[] values = {0, 360, 480, 720, 1080, 1440, 2160};
-          int checked = 0;
-          for (int i = 0; i < values.length; i++) if (values[i] == preferred) checked = i;
-          new AlertDialog.Builder(
-                  new android.view.ContextThemeWrapper(
-                      this, Ui.isDark(this) ? R.style.AppThemeDark : R.style.AppTheme))
-              .setTitle("首选画质")
-              .setSingleChoiceItems(
-                  labels,
-                  checked,
-                  (dialog, index) -> {
-                    prefs.edit().putInt("preferred_quality", values[index]).apply();
-                    dialog.dismiss();
-                    if (player != null) QualityOptions.applyPreferredHeight(player, values[index]);
-                    showSettings();
-                  })
-              .setNegativeButton("取消", null)
-              .show();
+          try {
+            startActivity(
+                new Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                    .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, getPackageName()));
+          } catch (RuntimeException error) {
+            showError("无法打开通知设置", error);
+          }
         });
+    int[] threadOptions = {1, 2, 4, 8, 16};
+    int threads = Math.max(1, Math.min(16, prefs.getInt("download_threads", 8)));
+    int selectedThread = 0;
+    for (int i = 0; i < threadOptions.length; i++)
+      if (threadOptions[i] <= threads) selectedThread = i;
+    final int selectedThreadIndex = selectedThread;
+    action(
+        body,
+        "下载并发 · " + threads + " 路",
+        () ->
+            new AlertDialog.Builder(
+                    new ContextThemeWrapper(
+                        this, Ui.isDark(this) ? R.style.AppThemeDark : R.style.AppTheme))
+                .setTitle("下载并发")
+                .setSingleChoiceItems(
+                    new String[] {"1 路", "2 路", "4 路", "8 路", "16 路"},
+                    selectedThreadIndex,
+                    (dialog, index) -> {
+                      prefs.edit().putInt("download_threads", threadOptions[index]).apply();
+                      dialog.dismiss();
+                      showSettings();
+                    })
+                .setNegativeButton("取消", null)
+                .show());
     addSwitch(
         body,
         "深色外观",
@@ -2196,6 +2197,11 @@ public class MainActivity extends Activity {
   protected void onResume() {
     super.onResume();
     resumed = true;
+    if (pendingDownloadFeedback != null) {
+      DownloadStore.Job job = pendingDownloadFeedback;
+      pendingDownloadFeedback = null;
+      showDownloadFeedback("completed".equals(job.state) ? "下载完成" : "下载失败", job);
+    }
     if (current != null) current.web.onResume();
   }
 
@@ -2232,6 +2238,10 @@ public class MainActivity extends Activity {
     handler.removeCallbacksAndMessages(null);
     for (BrowserTab tab : tabs) tab.web.destroy();
     tabs.clear();
+    if (downloadReceiverRegistered) {
+      unregisterReceiver(downloadReceiver);
+      downloadReceiverRegistered = false;
+    }
     super.onDestroy();
   }
 

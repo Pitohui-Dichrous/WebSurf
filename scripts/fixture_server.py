@@ -60,6 +60,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.payload((ROOT / "quality.html").read_bytes(), "text/html; charset=utf-8", cookie=True)
         if route == "/recovery.html":
             return self.payload((ROOT / "recovery.html").read_bytes(), "text/html; charset=utf-8", cookie=True)
+        if route == "/layout.html":
+            # A real HTTP document without media or external resources keeps layout tests isolated.
+            return self.payload(
+                b'<!doctype html><html><head><meta charset="utf-8">'
+                b'<meta name="viewport" content="width=device-width,initial-scale=1">'
+                b'<title>WebSurf layout fixture</title></head><body></body></html>',
+                "text/html; charset=utf-8")
         if route == "/health":
             return self.payload(b'{"status":"ready","fixture":"WebSurf"}', "application/json")
         if route == "/api/requests":

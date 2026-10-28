@@ -8,6 +8,8 @@ import java.util.Map;
 /** An observed resource, never a claim that a URL is downloadable. */
 public final class WebResource {
   public final String url;
+  public boolean frozenDownloadHeaders;
+  public final String transferScope = java.util.UUID.randomUUID().toString();
   public String mime = "", kind = "其他", source = "网络请求", title = "", pageUrl = "";
 
   /** Poster belongs to this exact media URL; clear it when a DOM element changes source. */
