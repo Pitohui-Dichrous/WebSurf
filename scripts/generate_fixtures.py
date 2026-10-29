@@ -74,10 +74,21 @@ def main() -> None:
     key_info.unlink()
     run(executable, "-i", media / "sample-360.mp4", "-vn", "-c:a", "copy", "-movflags", "+faststart", media / "audio-only.m4a")
     png(media / "cover.png")
+    # The only keyframe is black at zero; the frame at three seconds is red, so a sync-only
+    # thumbnail seek would expose the intro instead of the requested position.
+    run(executable, "-f", "lavfi", "-i", "color=c=black:size=320x180:rate=24:duration=5",
+        "-vf", "drawbox=x=0:y=0:w=iw:h=ih:color=red:t=fill:enable='gte(t,2.5)'",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "29", "-pix_fmt", "yuv420p",
+        "-g", "240", "-keyint_min", "240", "-sc_threshold", "0", "-an", "-movflags", "+faststart",
+        media / "preview-black-intro.mp4")
+    run(executable, "-f", "lavfi", "-i", "color=c=blue:size=320x180:rate=24:duration=1",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "29", "-pix_fmt", "yuv420p",
+        "-an", "-movflags", "+faststart", media / "preview-short.mp4")
     manifest = {
         "durationSeconds": 8,
         "videoCodec": "H.264", "audioCodec": "AAC", "variants": [360, 720],
         "note": "Synthetic FFmpeg testsrc2 + sine media; AES test key is public fixture data.",
+        "previewFixtures": {"preview-black-intro.mp4": 5, "preview-short.mp4": 1},
         "files": [
             {"path": item.relative_to(OUT).as_posix(), "bytes": item.stat().st_size,
              "sha256": hashlib.sha256(item.read_bytes()).hexdigest()}

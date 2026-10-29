@@ -11,11 +11,11 @@
 使用特殊播放器的网页不可以，油管别想啦
 
 <!-- release-version:start -->
-**酸性设计 · 0.6.1-acid.2 视觉预览版**
+**酸性设计 · 0.6.1-acid.3 视觉预览版**
 
 黑白与荧光绿、硬边色块、粗窄字体。此版本来自 `酸性设计` 分支。
 
-**[下载预览版](https://github.com/Pitohui-Dichrous/WebSurf/releases/download/v0.6.1-acid.2/WebSurf-0.6.1-acid.2.apk)** · [稳定版](https://github.com/Pitohui-Dichrous/WebSurf/releases/tag/v0.5.0)
+**[下载预览版](https://github.com/Pitohui-Dichrous/WebSurf/releases/download/v0.6.1-acid.3/WebSurf-0.6.1-acid.3.apk)** · [稳定版](https://github.com/Pitohui-Dichrous/WebSurf/releases/tag/v0.5.0)
 <!-- release-version:end -->
 
 ## 基本功能

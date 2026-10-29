@@ -131,7 +131,7 @@ def update_docs(root, info, release_tags):
     return {readme_path: readme, usage_path: usage}
 
 
-def prepare(root, *, patch=False, minor=False, version=None, channel=None):
+def prepare(root, *, branch_update=False, patch=False, minor=False, version=None, channel=None):
     root = Path(root)
     old = load_version(root)
     branch = current_branch(root)
@@ -143,17 +143,26 @@ def prepare(root, *, patch=False, minor=False, version=None, channel=None):
     channel = inferred or channel or (old["channel"] if old["branch"] == branch else None)
     if channel is None or not re.fullmatch(CHANNEL, channel):
         raise ValueError("Unknown branch: provide --channel with its stable lowercase slug")
+    main = channel == "main"
+    if main and branch not in {"main", "master"}:
+        raise ValueError("The main channel is reserved for the main/master branch")
+    if not main and (patch or minor or (version is not None and version != old["base"])):
+        raise ValueError("Preview branches keep the base version; use prepare --branch. Increase the base only when promoting to main")
+    if main and (branch_update or not (patch or minor or version is not None)):
+        raise ValueError("Promoting to main requires --patch, --minor or --version X.Y.Z")
     if git(root, "remote", "get-url", "origin", required=False) is not None:
         git(root, "fetch", "--tags", "origin")
     release_tags = tags(root)
-    if "v" + old["name"] not in release_tags and old["branch"] == branch and version is None:
-        raise ValueError("This branch already has an unreleased version; use check, or explicitly prepare --version X.Y.Z")
-    if version is None:
+    if "v" + old["name"] not in release_tags and old["branch"] == branch:
+        raise ValueError("This branch already has an unreleased version; use check before preparing another release")
+    if not main:
+        version = old["base"]
+    elif version is None:
         major, minor_number, patch_number = map(int, old["base"].split("."))
         version = f"{major}.{minor_number + 1}.0" if minor else f"{major}.{minor_number}.{patch_number + 1}"
     if not re.fullmatch(CORE, version):
         raise ValueError("--version requires a semantic base such as 0.6.1")
-    if tuple(map(int, version.split("."))) <= tuple(map(int, old["base"].split("."))):
+    if main and tuple(map(int, version.split("."))) <= tuple(map(int, old["base"].split("."))):
         raise ValueError("The new base version must be greater than the stored base")
     ordinals = [int(match[1]) for tag in release_tags
                 if (match := re.fullmatch("v" + CORE + "-" + re.escape(channel) + r"\.(\d+)", tag))]
@@ -176,7 +185,9 @@ def main():
     check = commands.add_parser("check", help="Validate the persisted version and branch")
     check.add_argument("--unreleased", action="store_true", help="Also reject an existing release tag")
     update = commands.add_parser("prepare", help="Advance version metadata and release docs once")
-    choice = update.add_mutually_exclusive_group(required=True)
+    choice = update.add_mutually_exclusive_group()
+    choice.add_argument("--branch", dest="branch_update", action="store_true",
+                        help="Keep the base version and advance the preview release ordinal")
     choice.add_argument("--patch", action="store_true")
     choice.add_argument("--minor", action="store_true")
     choice.add_argument("--version")
@@ -184,7 +195,8 @@ def main():
     args = parser.parse_args()
     try:
         if args.command == "prepare":
-            info = prepare(ROOT, patch=args.patch, minor=args.minor, version=args.version, channel=args.channel)
+            info = prepare(ROOT, branch_update=args.branch_update, patch=args.patch,
+                           minor=args.minor, version=args.version, channel=args.channel)
         else:
             info = load_version()
             branch = validate_branch(info)

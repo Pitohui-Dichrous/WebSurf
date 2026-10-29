@@ -22,7 +22,7 @@ if (rootProject.file('.git').exists()) {
                 activeBranch == '酸性设计' ? 'acid' :
                 activeBranch == appVersion.getProperty('branch') ? releaseChannel : null
         if (expectedChannel != releaseChannel) {
-            throw new GradleException('Version channel does not match this branch. Run python scripts/version.py prepare --patch (or --minor / --version).')
+            throw new GradleException('Version channel does not match this branch. On a preview run python scripts/version.py prepare --branch; on main choose --patch / --minor / --version.')
         }
     }
 }

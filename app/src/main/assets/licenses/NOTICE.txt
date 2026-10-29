@@ -1,6 +1,6 @@
 # Third-party components
 
-WebSurf uses AndroidX Core, AndroidX WebKit, AndroidX Media3, their transitive AndroidX dependencies, and the Android/Java platform APIs. AndroidX components are distributed under the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0). Dependency coordinates and versions are recorded in `app/build.gradle` and the resolved dependency report under `docs/verification/`.
+WebSurf uses AndroidX Core, AndroidX WebKit, AndroidX Media3, their transitive AndroidX dependencies, and the Android/Java platform APIs. AndroidX components are distributed under the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0). Dependency coordinates and versions are recorded in `app/build.gradle`.
 
 Java compatibility support is provided by [desugar_jdk_libs](https://github.com/google/desugar_jdk_libs), including OpenJDK-derived components under GPLv2 with the Classpath Exception and accompanying notices. Gradle Wrapper is distributed under Apache License 2.0. JUnit is used only in tests under EPL 1.0; AndroidX Test uses Apache License 2.0.
 
@@ -9,6 +9,8 @@ System WebView is supplied by the device and uses the Chromium project; its noti
 The acid-design branch uses an original WebSurf interface composition. Action icons use official Lucide SVG geometry from commit be09619c1c1124ad09c19fc3e87ee3b939409bbd under ISC and Feather-derived MIT licenses. The complete upstream license is bundled as Lucide-LICENSE.txt.
 
 Display typography uses unmodified Barlow Condensed ExtraBold, Copyright 2017 The Barlow Project Authors (https://github.com/jpt/barlow), under the SIL Open Font License 1.1. The full license and source details are bundled as Barlow-Condensed-OFL.txt and Barlow-Condensed-SOURCE.txt. Chinese labels use the device's native CJK font.
+
+Resource-list fallback artwork was supplied by the user as SVG and GIF files. The SVG metadata identifies Phosphor Icons source geometry, Copyright (c) 2023 Phosphor Icons, under the MIT License. The complete embedded notice is bundled as Phosphor-Icons-MIT.txt and source/render details as Resource-Art-SOURCE.txt. Static resources are mechanical PNG renders preserving the full composition and colors; the animated GIF is byte-identical to the supplied file. No runtime SVG rendering library is required.
 
 The application icon is the user-supplied WS.png, used without modification. It is a separate user-provided asset, not part of the Lucide or Barlow licenses. No QQ Browser code, graphics, fonts, native libraries or online scripts, and no Marathon artwork or proprietary fonts, are included in the application or source delivery.
 

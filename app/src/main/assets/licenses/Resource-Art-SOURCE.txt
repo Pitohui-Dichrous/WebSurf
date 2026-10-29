@@ -1,0 +1,5 @@
+Resource preview artwork was supplied by the user as unknown-file.svg, documents-folder.svg, audio-eighth-note.svg, loading-wheel.svg, loading-wheel-animated.svg and loading-wheel-animated.gif.
+
+The original files, source hashes, Android resource mappings and render hashes are included in the source distribution at assets/icons/resource-art/provenance.json. The four static SVGs are rendered mechanically to 512 x 512 PNG using Sharp 0.35.5, libvips 8.18.7 and librsvg 2.63.2, preserving their full square composition, transforms, clipping and colors. The animated GIF is copied byte for byte to app/src/main/res/raw/ws_resource_loading_animated.gif (eight 512 x 512 frames, 130 ms per frame, infinite loop). There is no redraw or tint.
+
+The SVG source-license metadata identifies Phosphor Icons source geometry under MIT. The complete embedded notice is reproduced as Phosphor-Icons-MIT.txt.

@@ -74,6 +74,9 @@ public class MainActivity extends Activity {
         }
       };
   ExoPlayer player;
+  private ExoPlayer previewCapturedSession;
+  private int previewCapturedWidth, previewCapturedHeight;
+  private long previewReadyAfter;
   PlayerView playerView;
   WebResource playing;
   BrowserTab playerTab;
@@ -874,13 +877,23 @@ public class MainActivity extends Activity {
 
   void capturePlayingPreview(ExoPlayer session, WebResource resource) {
     if (session != player
+        || resource == null
         || resource != playing
+        || !playerRenderedFrame
+        || session.getPlaybackState() != Player.STATE_READY
+        || SystemClock.uptimeMillis() < previewReadyAfter
         || playerView == null
         || !WebResource.isHttp(resource.url)
         || !(playerView.getVideoSurfaceView() instanceof TextureView texture)
         || !texture.isAvailable()) return;
     VideoSize size = session.getVideoSize();
     if (size.width <= 0 || size.height <= 0) return;
+    if (previewCapturedSession == session
+        && previewCapturedWidth == size.width
+        && previewCapturedHeight == size.height) return;
+    // Do not let a just-rendered black intro overwrite the decoded three-second preview.
+    long duration = session.getDuration();
+    if ((duration <= 0 || duration > 3000) && session.getCurrentPosition() < 3000) return;
     float factor = Math.min(1, Math.min(320f / size.width, 480f / size.height));
     int width = Math.max(1, Math.round(size.width * factor));
     int height = Math.max(1, Math.round(size.height * factor));
@@ -888,6 +901,9 @@ public class MainActivity extends Activity {
     android.graphics.Bitmap bitmap = texture.getBitmap(width, height);
     if (bitmap != null) {
       previewLoader.seed(resource, headersFor(resource), bitmap, size.width, size.height);
+      previewCapturedSession = session;
+      previewCapturedWidth = size.width;
+      previewCapturedHeight = size.height;
       bitmap.recycle();
     }
   }
@@ -1142,6 +1158,9 @@ public class MainActivity extends Activity {
           @Override
           public void onEvents(Player p, Player.Events events) {
             if (session == player) {
+              if (events.contains(Player.EVENT_POSITION_DISCONTINUITY)
+                  || events.contains(Player.EVENT_PLAYBACK_STATE_CHANGED))
+                previewReadyAfter = SystemClock.uptimeMillis() + 160;
               if (Math.abs(player.getVolume() - appliedGain) > .0001f) {
                 appliedGain = player.getVolume();
                 logicalMuted = appliedGain == 0;
@@ -1167,6 +1186,7 @@ public class MainActivity extends Activity {
           public void onVideoSizeChanged(VideoSize size) {
             if (session != player || resource != playing || size.width <= 0 || size.height <= 0)
               return;
+            previewReadyAfter = SystemClock.uptimeMillis() + 160;
             if (resource.width != size.width || resource.height != size.height)
               resource.previewRevision++;
             resource.width = size.width;
@@ -1205,6 +1225,7 @@ public class MainActivity extends Activity {
         @Override
         public void run() {
           if (player == null) return;
+          capturePlayingPreview(player, playing);
           syncNativeState();
           handler.postDelayed(this, 250);
         }
@@ -1450,6 +1471,8 @@ public class MainActivity extends Activity {
     // session.
     ExoPlayer old = player;
     player = null;
+    previewCapturedSession = null;
+    previewReadyAfter = 0;
     if (videoChrome != null) videoChrome.release();
     if (old != null) old.release();
     removeFromParent(videoChrome);

@@ -72,6 +72,34 @@ public final class ResourcePreviewTest {
   }
 
   @Test
+  public void threeSecondFrameSkipsBlackIntroWithoutSelectingAnEarlierKeyframe() throws Exception {
+    WebResource resource = new WebResource(server.base() + "/black-intro.mp4");
+    ResourcePreviewLoader.Result result = load(resource);
+    assertNotNull(result.error, result.bitmap);
+    assertEquals("视频画面", result.imageSource);
+    assertEquals(5000, result.durationMs);
+    int pixel = result.bitmap.getPixel(result.bitmap.getWidth() / 2, result.bitmap.getHeight() / 2);
+    assertTrue(
+        "The three-second non-keyframe must be red, not the black opening", Color.red(pixel) > 180);
+    assertTrue(Color.green(pixel) < 60);
+    assertTrue(Color.blue(pixel) < 60);
+    assertTrue("Preview transfer must remain bounded", server.transferred.get() <= 6 * 1024 * 1024);
+  }
+
+  @Test
+  public void shortVideoUsesItsFirstFrameInsteadOfSeekingPastItsEnd() throws Exception {
+    WebResource resource = new WebResource(server.base() + "/short-video.mp4");
+    ResourcePreviewLoader.Result result = load(resource);
+    assertNotNull(result.error, result.bitmap);
+    assertEquals("视频画面", result.imageSource);
+    assertTrue(result.durationMs > 0 && result.durationMs < 3000);
+    int pixel = result.bitmap.getPixel(result.bitmap.getWidth() / 2, result.bitmap.getHeight() / 2);
+    assertTrue("The short clip must retain its blue first frame", Color.blue(pixel) > 180);
+    assertTrue(Color.red(pixel) < 60);
+    assertTrue(Color.green(pixel) < 60);
+  }
+
+  @Test
   public void hlsMasterUsesPosterAndLabelsMaximumWithoutFetchingSegments() throws Exception {
     WebResource resource = new WebResource(server.base() + "/master.m3u8");
     resource.posterUrl = server.base() + "/poster.png";
@@ -219,13 +247,15 @@ public final class ResourcePreviewTest {
         crossRequests = new AtomicInteger(),
         credentialLeaks = new AtomicInteger(),
         authenticationFailures = new AtomicInteger();
-    final byte[] video, poster, master;
+    final byte[] video, blackIntro, shortVideo, poster, master;
     final CountDownLatch delayedPosterRequested = new CountDownLatch(1),
         delayedPosterRelease = new CountDownLatch(1);
     volatile boolean closed;
 
     Fixture() throws Exception {
       video = asset("fixtures/media/sample-720.mp4");
+      blackIntro = asset("fixtures/media/preview-black-intro.mp4");
+      shortVideo = asset("fixtures/media/preview-short.mp4");
       poster = asset("fixtures/media/cover.png");
       master =
           ("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=10,RESOLUTION=640x360\nlow.m3u8\n"
@@ -311,7 +341,13 @@ public final class ResourcePreviewTest {
           return;
         }
         byte[] data =
-            path.equals("/video.mp4") ? video : path.equals("/master.m3u8") ? master : poster;
+            path.equals("/video.mp4")
+                ? video
+                : path.equals("/black-intro.mp4")
+                    ? blackIntro
+                    : path.equals("/short-video.mp4")
+                        ? shortVideo
+                        : path.equals("/master.m3u8") ? master : poster;
         if (path.endsWith(".ts") || path.equals("/low.m3u8") || path.equals("/high.m3u8"))
           segmentRequests.incrementAndGet();
         int start = 0, end = data.length - 1;

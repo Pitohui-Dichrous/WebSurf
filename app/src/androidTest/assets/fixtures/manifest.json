@@ -104,6 +104,16 @@
       "sha256": "be45cb2605bf36bebde684841a28f0fd43c69850a3dce5fedba69928ee3a8991"
     },
     {
+      "path": "media/preview-black-intro.mp4",
+      "bytes": 4761,
+      "sha256": "ed80684ffa64588abaa5267d6b07662d6d6804f2be6c5e7a1b7eb5de01d05500"
+    },
+    {
+      "path": "media/preview-short.mp4",
+      "bytes": 2235,
+      "sha256": "475819de0e751435be850fbb0ceeb7aa5d9317447215dc938ab4a7e07c7ce1ee"
+    },
+    {
       "path": "media/sample-360.mp4",
       "bytes": 472971,
       "sha256": "0bc624cd49719a190fac1c853e952f85f8bbeed2d73d66ba71e16628a52c00e6"
@@ -113,5 +123,9 @@
       "bytes": 1323867,
       "sha256": "403cc375ec9b6cfd335ca5a1a037841c846da2ef2f118fdcae85c5d01b01ccc7"
     }
-  ]
+  ],
+  "previewFixtures": {
+    "preview-black-intro.mp4": 5,
+    "preview-short.mp4": 1
+  }
 }

@@ -1,0 +1,3 @@
+# Preserve the supplied SVG source bytes and their recorded hashes across Git checkouts.
+*.svg binary
+*.gif binary

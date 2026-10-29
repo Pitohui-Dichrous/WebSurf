@@ -239,12 +239,29 @@ public final class ResourcePreviewLoader implements AutoCloseable {
             positiveLong(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION));
         if (result.bitmap == null && result.width > 0 && result.height > 0) {
           Bitmap frame = null;
-          if (Build.VERSION.SDK_INT >= 27)
+          // Decode the actual three-second frame: a nearby keyframe can still be a black intro.
+          // Very short clips have no frame at that timestamp, so start at their first frame.
+          long timeUs = result.durationMs > 0 && result.durationMs <= 3000 ? 0 : 3_000_000L;
+          try {
             frame =
-                retriever.getScaledFrameAtTime(
-                    0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC, 384, 216);
-          else if ((long) result.width * result.height <= 8_000_000L)
-            frame = retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
+                videoFrame(
+                    retriever,
+                    timeUs,
+                    MediaMetadataRetriever.OPTION_CLOSEST,
+                    result.width,
+                    result.height);
+          } catch (RuntimeException unsupportedFrame) {
+            // Some decoders cannot seek to a non-sync frame; retain the bounded first-frame
+            // fallback.
+          }
+          if (frame == null)
+            frame =
+                videoFrame(
+                    retriever,
+                    0,
+                    MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                    result.width,
+                    result.height);
           if (frame != null) {
             result.bitmap = small(frame, true);
             result.imageSource = "视频画面";
@@ -257,6 +274,14 @@ public final class ResourcePreviewLoader implements AutoCloseable {
       result.error = "预览暂不可读取";
     }
     return result;
+  }
+
+  private static Bitmap videoFrame(
+      MediaMetadataRetriever retriever, long timeUs, int option, int width, int height) {
+    if (Build.VERSION.SDK_INT >= 27)
+      return retriever.getScaledFrameAtTime(timeUs, option, 384, 216);
+    if ((long) width * height <= 8_000_000L) return retriever.getFrameAtTime(timeUs, option);
+    return null;
   }
 
   static void applyPlaylist(Result result, String text) {

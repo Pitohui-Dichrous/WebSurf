@@ -20,7 +20,8 @@ public final class ResourceRow extends LinearLayout {
   private final ResourcePreviewLoader loader;
   private final Map<String, String> headers;
   private final ImageView image;
-  private final TextView placeholder, imageSource, quality, dimensions, variants, details;
+  private final ResourceArtworkView artwork;
+  private final TextView imageSource, quality, dimensions, variants, details;
   private final FrameLayout picture;
   private final Typeface qualityTypeface;
   private final float qualitySize;
@@ -63,9 +64,14 @@ public final class ResourceRow extends LinearLayout {
     image.setScaleType(ImageView.ScaleType.FIT_CENTER);
     image.setContentDescription(resource.label() + "的缩略图");
     picture.addView(image, new FrameLayout.LayoutParams(-1, -1));
-    placeholder = Ui.text(context, resource.isVideo() ? "预览" : resource.kind, 12, Ui.MUTED);
-    placeholder.setGravity(Gravity.CENTER);
-    picture.addView(placeholder, new FrameLayout.LayoutParams(-1, -1));
+    artwork = new ResourceArtworkView(context);
+    artwork.show(
+        "音频".equals(resource.kind)
+            ? ResourceArtworkView.Kind.AUDIO
+            : "其他".equals(resource.kind)
+                ? ResourceArtworkView.Kind.DOCUMENT
+                : ResourceArtworkView.Kind.UNKNOWN);
+    picture.addView(artwork, new FrameLayout.LayoutParams(-1, -1));
     imageSource = Ui.text(context, "", 11, Ui.MUTED);
     imageSource.setGravity(Gravity.LEFT | Gravity.CENTER_VERTICAL);
     imageSource.setMinHeight(dp(22));
@@ -171,12 +177,17 @@ public final class ResourceRow extends LinearLayout {
   private void request(boolean retry) {
     if (!resource.isVideo() && !"图片".equals(resource.kind)) {
       requested = true;
-      imageSource.setText("");
+      imageSource.setText("音频".equals(resource.kind) ? "音频" : "文档");
+      picture.setContentDescription(imageSource.getText());
+      getViewTreeObserver().removeOnPreDrawListener(visibility);
       return;
     }
     requested = true;
     getViewTreeObserver().removeOnPreDrawListener(visibility);
     imageSource.setText("加载中");
+    image.setVisibility(GONE);
+    artwork.setVisibility(VISIBLE);
+    artwork.show(ResourceArtworkView.Kind.LOADING);
     picture.setOnClickListener(null);
     picture.setClickable(false);
     picture.setFocusable(false);
@@ -188,15 +199,17 @@ public final class ResourceRow extends LinearLayout {
           if (row == null || !row.isAttachedToWindow()) return;
           row.updateText();
           if (result.bitmap != null) {
+            row.artwork.setVisibility(GONE);
             row.image.setImageBitmap(result.bitmap);
-            row.placeholder.setVisibility(GONE);
+            row.image.setVisibility(VISIBLE);
             row.imageSource.setText(result.imageSource);
             row.picture.setContentDescription(result.imageSource);
           } else {
-            row.placeholder.setVisibility(VISIBLE);
-            row.placeholder.setText("暂无预览");
-            row.imageSource.setText("重试预览");
-            row.picture.setContentDescription("重试预览");
+            row.artwork.show(ResourceArtworkView.Kind.UNKNOWN);
+            row.artwork.setVisibility(VISIBLE);
+            row.image.setVisibility(GONE);
+            row.imageSource.setText("暂无预览 · 重试");
+            row.picture.setContentDescription("暂无预览，重试预览");
             row.picture.setOnClickListener(view -> row.request(true));
             Ui.ripple(row.picture, Ui.BG, 0);
           }

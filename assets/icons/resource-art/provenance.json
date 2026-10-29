@@ -1,0 +1,100 @@
+{
+  "schema": 1,
+  "origin": "User-provided attachments, original filenames retained; no original artwork changes",
+  "originals": [
+    {
+      "file": "unknown-file.svg",
+      "bytes": 15134,
+      "sha256": "0ba647040d0f9d48c4dab4f12742ca13928d98f85067ef95912262c522116d72"
+    },
+    {
+      "file": "documents-folder.svg",
+      "bytes": 20427,
+      "sha256": "772c5a00066b2ac6918f70f09d9eb2e136bf89d97702a5097acaa5db8541f5b8"
+    },
+    {
+      "file": "audio-eighth-note.svg",
+      "bytes": 13008,
+      "sha256": "a49614bd5569b343eaccae4bc687e55006490db1c1a76a9fedf46ebc064c3611"
+    },
+    {
+      "file": "loading-wheel.svg",
+      "bytes": 40015,
+      "sha256": "10f69b874cb27c0d293275b8b907446cbd5a4489fd7a945d4d0b7497d51df4c2"
+    },
+    {
+      "file": "loading-wheel-animated.svg",
+      "bytes": 49747,
+      "sha256": "2ce7943d1af56ec87c41c06c9e917bbd951cf1b5ddc6d424dfecee74dfebbd8c"
+    },
+    {
+      "file": "loading-wheel-animated.gif",
+      "bytes": 147059,
+      "sha256": "b4e56204de6ecc6ee33bff126bd7fbbcc8c44ead992bf6cf67a66e2d148fee6e"
+    }
+  ],
+  "android_resources": [
+    {
+      "source": "unknown-file.svg",
+      "resource": "app/src/main/res/drawable-nodpi/ws_resource_unknown.png",
+      "bytes": 27834,
+      "sha256": "0792c0b24cd38a607561dda5b35755a62d3fce0a70207b38f3aa9b22b1546aaf"
+    },
+    {
+      "source": "documents-folder.svg",
+      "resource": "app/src/main/res/drawable-nodpi/ws_resource_document.png",
+      "bytes": 28592,
+      "sha256": "48cbe8e1696f0f7035ae6cc75630ba1bab5b03c916ddf3c5500d9c093c311662"
+    },
+    {
+      "source": "audio-eighth-note.svg",
+      "resource": "app/src/main/res/drawable-nodpi/ws_resource_audio.png",
+      "bytes": 28507,
+      "sha256": "08bbb2b444331c997eef0695fff68c347e94486130dea4d4435ce257158b9392"
+    },
+    {
+      "source": "loading-wheel.svg",
+      "resource": "app/src/main/res/drawable-nodpi/ws_resource_loading_static.png",
+      "bytes": 35830,
+      "sha256": "3a28299a767a03ef18ac182d05aa01a3e48399624c206d153a2db5be6760d9c1"
+    },
+    {
+      "source": "loading-wheel-animated.gif",
+      "resource": "app/src/main/res/raw/ws_resource_loading_animated.gif",
+      "bytes": 147059,
+      "sha256": "b4e56204de6ecc6ee33bff126bd7fbbcc8c44ead992bf6cf67a66e2d148fee6e"
+    }
+  ],
+  "conversion": {
+    "method": "Mechanical SVG rasterization with Sharp/libvips/librsvg",
+    "sharp": "0.35.5",
+    "libvips": "8.18.7",
+    "librsvg": "2.63.2",
+    "cairo": "1.18.6",
+    "input_density": 72,
+    "output_width": 512,
+    "output_height": 512,
+    "resize_kernel": "lanczos3",
+    "png_compression_level": 9,
+    "png_adaptive_filtering": false,
+    "png_palette": false,
+    "script": "assets/icons/resource-art/render-static.cjs",
+    "preserved": "Full square composition, affine matrices, clipping, colors, opacity, shadows; no tint/crop/redraw"
+  },
+  "animation": {
+    "resource": "app/src/main/res/raw/ws_resource_loading_animated.gif",
+    "byte_identical_to_supplied_gif": true,
+    "width": 512,
+    "height": 512,
+    "frames": 8,
+    "frame_duration_ms": 130,
+    "loop_duration_ms": 1040,
+    "loop_count": 0
+  },
+  "license": {
+    "attribution": "The supplied SVG metadata identifies Phosphor Icons, copyright 2023, MIT License",
+    "notice": "Phosphor-Icons-MIT.txt",
+    "notice_copied_from": "source-license metadata common to all five supplied SVGs",
+    "bundled_notice": "app/src/main/assets/licenses/Phosphor-Icons-MIT.txt"
+  }
+}
