@@ -1551,6 +1551,8 @@ public class MainActivity extends Activity {
   }
 
   LinearLayout sheet(String title) {
+    // Retire the previous updater before dismiss() queues that dialog's listener.
+    stopSheetRefresh();
     if (activeSheet != null) activeSheet.dismiss();
     Dialog dialog =
         new Dialog(
@@ -1626,16 +1628,21 @@ public class MainActivity extends Activity {
     }
     dialog.setOnDismissListener(
         d -> {
-          if (sheetRefresh != null) {
-            handler.removeCallbacks(sheetRefresh);
-            sheetRefresh = null;
+          // A delayed close from an older panel must not cancel its successor's updater.
+          if (activeSheet == dialog) {
+            stopSheetRefresh();
+            activeSheet = null;
           }
-          if (activeSheet == dialog) activeSheet = null;
         });
     dialog.show();
     if (window != null) window.setLayout(-1, -2);
     Ui.enter(box);
     return box;
+  }
+
+  private void stopSheetRefresh() {
+    if (sheetRefresh != null) handler.removeCallbacks(sheetRefresh);
+    sheetRefresh = null;
   }
 
   String displayTitle(String title) {
@@ -1781,10 +1788,11 @@ public class MainActivity extends Activity {
           });
     }
     render.run();
+    Dialog panel = activeSheet;
     sheetRefresh =
         new Runnable() {
           public void run() {
-            if (activeSheet == null) return;
+            if (activeSheet != panel || sheetRefresh != this) return;
             render.run();
             handler.postDelayed(this, 700);
           }
@@ -2012,7 +2020,7 @@ public class MainActivity extends Activity {
     sheetRefresh =
         new Runnable() {
           public void run() {
-            if (activeSheet != owner) return;
+            if (activeSheet != owner || sheetRefresh != this) return;
             render.run();
             handler.postDelayed(this, 750);
           }
