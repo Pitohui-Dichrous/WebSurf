@@ -57,6 +57,7 @@ public class BrowserPolicyTest {
     assertEquals("https://www.baidu.com", MainActivity.normalizeAddress("www.baidu.com"));
     assertEquals("http://localhost:8765/", MainActivity.normalizeAddress("http://localhost:8765/"));
     assertEquals(
-        "https://www.baidu.com/s?wd=hello+world", MainActivity.normalizeAddress("hello world"));
+        "https://cn.bing.com/search?q=hello+world&ensearch=0",
+        MainActivity.normalizeAddress("hello world"));
   }
 }

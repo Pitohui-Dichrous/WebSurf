@@ -11,11 +11,11 @@
 使用特殊播放器的网页不可以，油管别想啦
 
 <!-- release-version:start -->
-**酸性设计 · 0.6.1-acid.4 视觉预览版**
+**酸性设计 · 0.6.1-acid.5 视觉预览版**
 
 黑白与荧光绿、硬边色块、粗窄字体。此版本来自 `酸性设计` 分支。
 
-**[下载预览版](https://github.com/Pitohui-Dichrous/WebSurf/releases/download/v0.6.1-acid.4/WebSurf-0.6.1-acid.4.apk)** · [稳定版](https://github.com/Pitohui-Dichrous/WebSurf/releases/tag/v0.5.0)
+**[下载预览版](https://github.com/Pitohui-Dichrous/WebSurf/releases/download/v0.6.1-acid.5/WebSurf-0.6.1-acid.5.apk)** · [稳定版](https://github.com/Pitohui-Dichrous/WebSurf/releases/tag/v0.5.0)
 <!-- release-version:end -->
 
 ## 基本功能
@@ -24,6 +24,7 @@
 - 嗅探视频、音频、图片等资源，提供视频缩略图和清晰度。
 - 支持普通视频与 m3u8 下载，下载后合并为 MP4。
 - 支持多路下载、边下边播、下载管理和浅色/深色外观。
+- 可切换搜索引擎，默认必应国内版。
 
 Android 8.0 及以上。默认百度首页，可在设置中修改。
 

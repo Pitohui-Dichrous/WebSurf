@@ -5,6 +5,7 @@ import static org.junit.Assert.*;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.graphics.Rect;
 import android.net.Uri;
 import android.os.SystemClock;
 import android.view.MotionEvent;
@@ -209,7 +210,7 @@ public final class BrowserFlowTest {
     assertTrue(
         "Native takeover globally paused unrelated media",
         boolJs("!document.getElementById('ad').paused"));
-    tapElement("play-other");
+    tapElement("play-other", true);
     awaitNativeHeight(720);
     assertEquals(2, numberJs("window.__fixture.trustedClicks").intValue());
     assertTrue(ui(activity -> activity.activeTarget.url.contains("slot=other")));
@@ -690,17 +691,89 @@ public final class BrowserFlowTest {
   }
 
   private void tapElement(String id) throws Exception {
+    tapElement(id, false);
+  }
+
+  private void tapElement(String id, boolean avoidPinnedPlayer) throws Exception {
     String element = "document.getElementById(" + JSONObject.quote(id) + ")";
     js(element + ".scrollIntoView({block:'center',behavior:'instant'}); true");
     SystemClock.sleep(180);
-    JSONObject rect =
-        (JSONObject)
-            js(
-                "return JSON.parse(JSON.stringify((function(){var r="
-                    + element
-                    + ".getBoundingClientRect();return"
-                    + " {x:r.left+r.width/2,y:r.top+r.height/2,vw:window.innerWidth};})()))");
+    JSONObject rect = elementCenter(element);
+    if (avoidPinnedPlayer) {
+      // A pinned 16:9 player can extend below the viewport's midpoint in short browser windows.
+      // Reveal the actual HTML button below it instead of sending a tap through the native player.
+      if (nativePlayerCovers(id, "center", rect)) {
+        js(element + ".scrollIntoView({block:'end',behavior:'instant'}); true");
+        SystemClock.sleep(180);
+        rect = elementCenter(element);
+      }
+      assertFalse(
+          "The pinned native player still obscures the real HTML button " + id,
+          nativePlayerCovers(id, "final", rect));
+    }
     tapViewportPoint(rect);
+  }
+
+  private JSONObject elementCenter(String element) throws Exception {
+    return (JSONObject)
+        js(
+            "return JSON.parse(JSON.stringify((function(){var r="
+                + element
+                + ".getBoundingClientRect();return"
+                + " {x:r.left+r.width/2,y:r.top+r.height/2,vw:window.innerWidth,vh:window.innerHeight};})()))");
+  }
+
+  private boolean nativePlayerCovers(String id, String alignment, JSONObject center) {
+    return ui(
+        activity -> {
+          WebView web = activity.current.web;
+          int[] at = new int[2];
+          web.getLocationOnScreen(at);
+          float scale = web.getWidth() / (float) center.optDouble("vw");
+          int x = Math.round(at[0] + (float) center.optDouble("x") * scale);
+          int y = Math.round(at[1] + (float) center.optDouble("y") * scale);
+          Rect clip = new Rect(), chrome = new Rect();
+          boolean clipVisible =
+              activity.anchorClip != null
+                  && activity.anchorClip.isShown()
+                  && activity.anchorClip.getGlobalVisibleRect(clip);
+          boolean chromeVisible =
+              activity.videoChrome != null
+                  && activity.videoChrome.isShown()
+                  && activity.videoChrome.getGlobalVisibleRect(chrome);
+          boolean covered =
+              clipVisible && chromeVisible && clip.contains(x, y) && chrome.contains(x, y);
+          String diagnostic =
+              "HTML tap "
+                  + id
+                  + " ("
+                  + alignment
+                  + "): web="
+                  + web.getWidth()
+                  + "x"
+                  + web.getHeight()
+                  + ", CSS="
+                  + center
+                  + ", screen=("
+                  + x
+                  + ","
+                  + y
+                  + "), anchorVisible="
+                  + clipVisible
+                  + ":"
+                  + clip
+                  + ", playerVisible="
+                  + chromeVisible
+                  + ":"
+                  + chrome
+                  + ", pinned="
+                  + activity.inlinePinned
+                  + ", covered="
+                  + covered;
+          System.out.println(diagnostic);
+          android.util.Log.i("WebSurfTest", diagnostic);
+          return covered;
+        });
   }
 
   private void tapViewportPoint(JSONObject rect) throws Exception {

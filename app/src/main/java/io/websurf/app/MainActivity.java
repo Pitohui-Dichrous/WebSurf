@@ -27,7 +27,6 @@ import androidx.webkit.WebViewFeature;
 import io.websurf.app.download.DownloadNames;
 import io.websurf.app.download.DownloadService;
 import io.websurf.app.download.DownloadStore;
-import java.net.URLEncoder;
 import java.util.*;
 import org.json.*;
 
@@ -386,6 +385,10 @@ public class MainActivity extends Activity {
     return prefs.getString("homepage", "https://www.baidu.com");
   }
 
+  SearchEngine searchEngine() {
+    return SearchEngine.fromId(prefs.getString("search_engine", "bing_cn"));
+  }
+
   void hideKeyboard() {
     address.clearFocus();
     ((InputMethodManager) getSystemService(INPUT_METHOD_SERVICE))
@@ -393,22 +396,22 @@ public class MainActivity extends Activity {
   }
 
   static String normalizeAddress(String input) {
+    return normalizeAddress(input, SearchEngine.BING_CN);
+  }
+
+  static String normalizeAddress(String input, SearchEngine engine) {
     String s = input.trim();
     if (WebResource.isHttp(s)) return s;
     if (!s.contains(" ")
         && (s.contains(".") || s.startsWith("localhost"))
         && WebResource.isHttp("https://" + s)) return "https://" + s;
-    try {
-      return "https://www.baidu.com/s?wd=" + URLEncoder.encode(s, "UTF-8");
-    } catch (java.io.UnsupportedEncodingException impossible) {
-      throw new IllegalStateException(impossible);
-    }
+    return (engine == null ? SearchEngine.BING_CN : engine).search(s);
   }
 
   void navigate(String url) {
     if (current == null) return;
     closePlayer(false, false);
-    current.web.loadUrl(normalizeAddress(url));
+    current.web.loadUrl(normalizeAddress(url, searchEngine()));
   }
 
   @SuppressWarnings("SetJavaScriptEnabled")
@@ -1655,6 +1658,7 @@ public class MainActivity extends Activity {
       case "书签与历史" -> "LIBRARY";
       case "选择网页视频" -> "VIDEO SOURCE";
       case "下载并发" -> "CONNECTIONS";
+      case "搜索引擎" -> "SEARCH ENGINE";
       default -> "WEBSURF";
     };
   }
@@ -1709,6 +1713,7 @@ public class MainActivity extends Activity {
   }
 
   String actionIcon(String title) {
+    if (title.startsWith("搜索引擎")) return "search";
     if (title.contains("通知")) return "bell";
     if (title.contains("下载") || title.contains("并发")) return "download";
     if (title.contains("书签") || title.contains("历史")) return "bookmark";
@@ -2240,6 +2245,7 @@ public class MainActivity extends Activity {
           prefs.edit().putString("homepage", value).apply();
           toast("主页已保存");
         });
+    action(body, "搜索引擎 · " + searchEngine().label, this::showSearchEngines);
     addSwitch(
         body,
         "自动接管视频",
@@ -2307,6 +2313,29 @@ public class MainActivity extends Activity {
     label.setPadding(0, dp(18), 0, dp(8));
     body.addView(label, new LinearLayout.LayoutParams(-1, -2));
     body.addView(Ui.rule(this, Ui.BORDER), new LinearLayout.LayoutParams(-1, dp(1)));
+  }
+
+  void showSearchEngines() {
+    LinearLayout body = scrollBody(sheet("搜索引擎"));
+    SearchEngine selected = searchEngine();
+    for (SearchEngine engine : SearchEngine.values()) {
+      Button choice =
+          action(
+              body,
+              engine.label,
+              () -> {
+                prefs.edit().putString("search_engine", engine.id).apply();
+                showSettings();
+              });
+      choice.setSelected(engine == selected);
+      if (engine == selected) {
+        choice.setTextColor(Ui.ACTION_INK);
+        Ui.ripple(choice, Ui.ACTION, 2);
+        Ui.Icon check = new Ui.Icon("check", Ui.ACTION_INK);
+        check.setBounds(0, 0, dp(20), dp(20));
+        choice.setCompoundDrawablesRelative(check, null, null, null);
+      } else choice.setCompoundDrawablesRelative(null, null, null, null);
+    }
   }
 
   void showConnections() {
@@ -2487,19 +2516,12 @@ public class MainActivity extends Activity {
   void goBack() {
     if (fullscreenWeb != null) {
       exitWebFullscreen();
-      return;
+      if (player == null) return;
     }
     if (player != null) {
-      if (videoChrome != null && videoChrome.isLocked()) {
-        videoChrome.setLocked(false);
-        return;
-      }
-      if (playerMode != VideoChrome.Mode.INLINE && activeTarget != null) {
-        setPlayerMode(VideoChrome.Mode.INLINE);
-        return;
-      }
-      closePlayer(true, true);
-      return;
+      boolean takeover = activeTarget != null;
+      closePlayer(false, takeover);
+      if (!takeover) return;
     }
     if (current != null && current.web.canGoBack()) {
       current.web.goBack();
