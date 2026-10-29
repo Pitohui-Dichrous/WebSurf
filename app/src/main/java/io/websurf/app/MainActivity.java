@@ -1549,7 +1549,7 @@ public class MainActivity extends Activity {
     TextView heading =
         Ui.text(
             this,
-            title.equals("WebSurf") ? "酸性设计  /  " + BuildConfig.VERSION_NAME : title,
+            title.equals("WebSurf") ? "//version. " + BuildConfig.VERSION_NAME : title,
             14,
             Ui.PLANE_INK);
     heading.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));

@@ -1,4 +1,32 @@
 plugins { id 'com.android.application' }
+// One release identity for Android metadata, BuildConfig and the release packager.
+def appVersion = new Properties()
+rootProject.file('version.properties').withReader('UTF-8') { appVersion.load(it) }
+def releaseBase = appVersion.getProperty('base')
+def releaseChannel = appVersion.getProperty('channel')
+def releaseSequence = appVersion.getProperty('sequence')?.toInteger()
+def releaseCode = appVersion.getProperty('code')?.toInteger()
+if (!(releaseBase ==~ /\d+\.\d+\.\d+/) || !(releaseChannel ==~ /[a-z][a-z0-9-]*/) ||
+        releaseCode == null || releaseCode < 1 || releaseSequence == null ||
+        (releaseChannel == 'main' ? releaseSequence != 0 : releaseSequence < 1)) {
+    throw new GradleException('Invalid version.properties. Use python scripts/version.py prepare.')
+}
+def releaseName = "${releaseBase}-${releaseChannel}" + (releaseChannel == 'main' ? '' : ".${releaseSequence}")
+// A source ZIP or detached tag retains its recorded identity; an active branch must match.
+if (rootProject.file('.git').exists()) {
+    def branchProcess = ['git', '-C', rootProject.projectDir.absolutePath, 'symbolic-ref', '--short', '-q', 'HEAD'].execute()
+    def activeBranch = branchProcess.inputStream.getText('UTF-8').trim()
+    branchProcess.waitFor()
+    if (branchProcess.exitValue() == 0) {
+        def expectedChannel = activeBranch in ['main', 'master'] ? 'main' :
+                activeBranch == '酸性设计' ? 'acid' :
+                activeBranch == appVersion.getProperty('branch') ? releaseChannel : null
+        if (expectedChannel != releaseChannel) {
+            throw new GradleException('Version channel does not match this branch. Run python scripts/version.py prepare --patch (or --minor / --version).')
+        }
+    }
+}
+
 def releaseProperties = new Properties()
 def releasePropertiesFile = rootProject.file('.tools/signing/release.properties')
 if (releasePropertiesFile.exists()) releasePropertiesFile.withInputStream { releaseProperties.load(it) }
@@ -9,8 +37,8 @@ android {
         applicationId 'io.websurf.app'
         minSdk 26
         targetSdk 35
-        versionCode 6
-        versionName '0.6.0-acid.1'
+        versionCode releaseCode
+        versionName releaseName
         testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
     }
     compileOptions {

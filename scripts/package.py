@@ -2,26 +2,30 @@
 from pathlib import Path
 import hashlib
 import json
-import re
 import zipfile
+from version import load_version, validate_branch
 
 root = Path(__file__).resolve().parent.parent
 dist = root / "dist"
 dist.mkdir(exist_ok=True)
-build_config = (root / "app/build.gradle").read_text(encoding="utf-8")
-versions = re.findall(r'''(?m)^\s*versionName\s+['"]([^'"]+)['"]\s*$''', build_config)
-if len(versions) != 1 or not re.fullmatch(
-        r"\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?"
-        r"(?:\+[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?", versions[0]):
-    raise SystemExit("Expected one safe semantic versionName in app/build.gradle")
-version = versions[0]
+identity = load_version(root)
+validate_branch(identity, root)
+version = identity["name"]
 apk = dist / f"WebSurf-{version}.apk"
 assert apk.is_file(), "Build and copy the release APK first"
+outputs = root / "app/build/outputs/apk/release"
+metadata = json.loads((outputs / "output-metadata.json").read_text(encoding="utf-8"))
+elements = metadata.get("elements", [])
+assert len(elements) == 1, "Expected one release APK"
+built = elements[0]
+assert built["versionName"] == version and built["versionCode"] == identity["code"], "Rebuild the release APK for this version"
+assert (outputs / built["outputFile"]).read_bytes() == apk.read_bytes(), "Copied APK differs from the actual build"
 archive = dist / f"WebSurf-{version}-source.zip"
 verification = json.loads((root / "docs/release-verification.json").read_text(encoding="utf-8"))
 assert verification.get("version") == version, "Update release verification for this version first"
+assert verification.get("apk_sha256") == hashlib.sha256(apk.read_bytes()).hexdigest(), "Verify this exact APK first"
 files = [root / name for name in (
-    "README.md", "THIRD_PARTY_NOTICES.md", "build.gradle", "settings.gradle",
+    "README.md", "AGENTS.md", "version.properties", "THIRD_PARTY_NOTICES.md", "build.gradle", "settings.gradle",
     "gradle.properties", "gradlew", "gradlew.bat", ".gitignore", ".gitattributes", "app/build.gradle",
     "docs/USAGE.md", "docs/ACID_DESIGN.md", "docs/release-verification.json")]
 # Public docs are explicitly listed above. Assets include the README image and Lucide originals,

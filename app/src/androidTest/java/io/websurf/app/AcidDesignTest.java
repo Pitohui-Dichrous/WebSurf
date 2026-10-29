@@ -134,6 +134,12 @@ public final class AcidDesignTest {
             return null;
           });
       awaitSheet();
+      ui(
+          a -> {
+            assertNotNull(findText(sheetRoot(a), "//version. " + BuildConfig.VERSION_NAME));
+            assertFalse(texts(sheetRoot(a)).contains("酸性设计"));
+            return null;
+          });
       capture("02-menu", dark);
       View settings = ui(a -> clickableText(sheetRoot(a), "设置"));
       assertNotNull("Menu must retain settings navigation", settings);
