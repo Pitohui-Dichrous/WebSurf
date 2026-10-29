@@ -1,0 +1,14 @@
+Barlow Condensed ExtraBold
+Copyright 2017 The Barlow Project Authors (https://github.com/jpt/barlow)
+License: SIL Open Font License 1.1; see Barlow-Condensed-OFL.txt.
+
+Source repository: https://github.com/google/fonts
+Source file: ofl/barlowcondensed/BarlowCondensed-ExtraBold.ttf
+Source URL: https://github.com/google/fonts/blob/main/ofl/barlowcondensed/BarlowCondensed-ExtraBold.ttf
+Git blob SHA: d5a6c7505459f142b20d65d3579e1b840462b75f
+SHA-256: 724c9c25952d5f4a2d87185d9767aa006144c5f0d944dc05bf7d5d603551c260
+Bytes: 110296
+Modifications: none
+Verification: local font and license Git blob hashes matched the official google/fonts contents API on 2026-10-29.
+License source: ofl/barlowcondensed/OFL.txt
+License Git blob SHA: 2f22ba6ca4dbc12145ae40b14c3368f387cba0e2

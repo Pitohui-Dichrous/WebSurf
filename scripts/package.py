@@ -2,12 +2,19 @@
 from pathlib import Path
 import hashlib
 import json
+import re
 import zipfile
 
 root = Path(__file__).resolve().parent.parent
 dist = root / "dist"
 dist.mkdir(exist_ok=True)
-version = "0.5.0"
+build_config = (root / "app/build.gradle").read_text(encoding="utf-8")
+versions = re.findall(r'''(?m)^\s*versionName\s+['"]([^'"]+)['"]\s*$''', build_config)
+if len(versions) != 1 or not re.fullmatch(
+        r"\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?"
+        r"(?:\+[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?", versions[0]):
+    raise SystemExit("Expected one safe semantic versionName in app/build.gradle")
+version = versions[0]
 apk = dist / f"WebSurf-{version}.apk"
 assert apk.is_file(), "Build and copy the release APK first"
 archive = dist / f"WebSurf-{version}-source.zip"
@@ -16,7 +23,7 @@ assert verification.get("version") == version, "Update release verification for 
 files = [root / name for name in (
     "README.md", "THIRD_PARTY_NOTICES.md", "build.gradle", "settings.gradle",
     "gradle.properties", "gradlew", "gradlew.bat", ".gitignore", ".gitattributes", "app/build.gradle",
-    "docs/USAGE.md", "docs/release-verification.json")]
+    "docs/USAGE.md", "docs/ACID_DESIGN.md", "docs/release-verification.json")]
 # Public docs are explicitly listed above. Assets include the README image and Lucide originals,
 # provenance and licenses; private analysis and internal verification logs are not source inputs.
 for folder in ("app/src", "gradle", "scripts", "assets"):

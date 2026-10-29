@@ -116,12 +116,15 @@ final class DownloadEngine {
                 : "";
         boolean hls = prefix.startsWith("#EXTM3U");
         if (hls) {
+          String outputName =
+              DownloadNames.mp4(
+                  r.url, r.connection.getHeaderField("Content-Disposition"), job.title);
           String text = readText(r.input, 8 * 1024 * 1024);
           HlsPlaylist playlist = HlsPlaylist.parse(r.url, text);
           r.close();
           completed = hls(playlist);
           job.mimeType = "video/mp4";
-          job.fileName = DownloadNames.mp4(job.title);
+          job.fileName = outputName;
         } else {
           if (job.url.toLowerCase(Locale.ROOT).contains(".m3u8")
               || job.mimeType.toLowerCase(Locale.ROOT).contains("mpegurl")) {

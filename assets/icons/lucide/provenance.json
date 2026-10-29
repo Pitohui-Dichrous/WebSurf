@@ -4,6 +4,14 @@
   "license": "ISC and Feather-derived MIT; full LICENSE included",
   "icons": [
     {
+      "file": "bell.svg",
+      "sha256": "394889e9631fe3a9a63be9a479a95b451b708e432d895978d21d9130b5ee5dbe"
+    },
+    {
+      "file": "bookmark.svg",
+      "sha256": "1d5023760db81f21c3b5a63f012ef540acc01932731c733e4645012a876d39f4"
+    },
+    {
       "file": "check.svg",
       "sha256": "7f33acc9a77a61659531044525fc008edebe215bf4dcf1c789c8674ad3277db0"
     },
@@ -56,12 +64,12 @@
       "sha256": "4f3237183dcaabfac92f4e94c776a9a9e45c3c5e77a921061a6b34b61eb5413f"
     },
     {
-      "file": "lock-keyhole.svg",
-      "sha256": "fc0b8b7590d1d9e9bb0112c5c2e15a78ade0bfeca6d6f8c79fbbe149236d74be"
-    },
-    {
       "file": "lock-keyhole-open.svg",
       "sha256": "9dbc41c9cd23e3bad8f3edb885e91d0ed514619ef632a2c5cd8a2e21ec37be35"
+    },
+    {
+      "file": "lock-keyhole.svg",
+      "sha256": "fc0b8b7590d1d9e9bb0112c5c2e15a78ade0bfeca6d6f8c79fbbe149236d74be"
     },
     {
       "file": "maximize.svg",
@@ -76,12 +84,12 @@
       "sha256": "f122ec4ea7f5693a0b1baafa9c708b53980dc87b4aacb297c6e6f71c1a4c115c"
     },
     {
-      "file": "picture-in-picture.svg",
-      "sha256": "ce3d4ae11094be2346002668be3f1998b03e0035e7e9f9a72b710b25d12418f4"
-    },
-    {
       "file": "picture-in-picture-2.svg",
       "sha256": "eccce9ef362520bbb8904fbc1fc89f5d02fb0fbb7c6704cdd3b761dd4fc102b0"
+    },
+    {
+      "file": "picture-in-picture.svg",
+      "sha256": "ce3d4ae11094be2346002668be3f1998b03e0035e7e9f9a72b710b25d12418f4"
     },
     {
       "file": "play.svg",
@@ -161,6 +169,8 @@
     "info": "info",
     "folder": "folder-open",
     "search": "search",
-    "alert": "circle-alert"
+    "alert": "circle-alert",
+    "bookmark": "bookmark",
+    "bell": "bell"
   }
 }

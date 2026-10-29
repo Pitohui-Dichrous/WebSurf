@@ -24,18 +24,23 @@ import android.widget.ImageButton;
 import android.widget.TextView;
 import androidx.core.graphics.PathParser;
 
-/** Shared native UI tokens, adapted from the user's MediaMaster visual system. */
+/** Acid edition: neutral planes, a single fluorescent accent, and deliberate type contrast. */
 public final class Ui {
-  public static int BG = 0xfff7f8f5;
-  public static int SURFACE = 0xffedf0eb;
-  public static int BORDER = 0xffdce1da;
-  public static int TEXT = 0xff272637;
-  public static int MUTED = 0xff62666b;
-  public static int SOFT_ACCENT = 0xffe8f0e9;
-  public static int CONTROL = 0xff145f39;
-  public static final int ACCENT = 0xff145f39;
+  public static int BG = 0xff000000;
+  public static int SURFACE = 0xff171717;
+  public static int BORDER = 0xff454545;
+  public static int TEXT = 0xfff5f5f5;
+  public static int MUTED = 0xffb6b6b6;
+  public static int SOFT_ACCENT = 0xff242424;
+  public static int CONTROL = 0xffc0fe03;
+  public static final int ACCENT = 0xffc0fe03;
+  public static int ACTION = ACCENT;
+  public static int ACTION_INK = Color.BLACK;
+  public static int PLANE = Color.BLACK;
+  public static int PLANE_INK = ACCENT;
   public static final int RED = 0xffb3261e;
   private static boolean dark;
+  private static Typeface displayFace;
   private static final PathInterpolator EASE_OUT = new PathInterpolator(.23f, 1f, .32f, 1f);
 
   private Ui() {}
@@ -43,7 +48,7 @@ public final class Ui {
   public static boolean isDark(Context context) {
     return context
         .getSharedPreferences("appearance", Context.MODE_PRIVATE)
-        .getBoolean("dark", false);
+        .getBoolean("dark", true);
   }
 
   public static void setDark(Context context, boolean enabled) {
@@ -57,13 +62,17 @@ public final class Ui {
 
   public static void configure(Context context) {
     dark = isDark(context);
-    BG = dark ? 0xff1c1c1c : 0xfff7f8f5;
-    SURFACE = dark ? 0xff2c2c2c : 0xffedf0eb;
-    BORDER = dark ? 0xff444444 : 0xffdce1da;
-    TEXT = dark ? 0xfff5f5f5 : 0xff272637;
-    MUTED = dark ? 0xffc2c2c2 : 0xff62666b;
-    SOFT_ACCENT = dark ? 0xff2a3d35 : 0xffe8f0e9;
-    CONTROL = dark ? 0xfff5f5f5 : ACCENT;
+    BG = dark ? Color.BLACK : 0xfff2f2f2;
+    SURFACE = dark ? 0xff171717 : Color.WHITE;
+    BORDER = dark ? 0xff454545 : 0xffbcbcbc;
+    TEXT = dark ? 0xfff5f5f5 : Color.BLACK;
+    MUTED = dark ? 0xffb6b6b6 : 0xff555555;
+    SOFT_ACCENT = dark ? 0xff242424 : 0xffe4e4e4;
+    CONTROL = dark ? ACCENT : Color.BLACK;
+    ACTION = dark ? ACCENT : Color.BLACK;
+    ACTION_INK = dark ? Color.BLACK : ACCENT;
+    PLANE = dark ? Color.BLACK : ACCENT;
+    PLANE_INK = dark ? ACCENT : Color.BLACK;
   }
 
   public static int dp(Context context, float value) {
@@ -75,15 +84,46 @@ public final class Ui {
     view.setText(value);
     view.setTextSize(size);
     view.setTextColor(color);
+    view.setTypeface(Typeface.create("sans-serif", Typeface.NORMAL));
     view.setIncludeFontPadding(false);
     view.setGravity(Gravity.CENTER_VERTICAL);
     return view;
   }
 
+  public static TextView display(Context context, String value, float size, int color) {
+    TextView view = text(context, value, size, color);
+    if (displayFace == null)
+      displayFace = context.getResources().getFont(R.font.barlow_condensed_extrabold);
+    view.setTypeface(displayFace);
+    view.setLetterSpacing(-.025f);
+    return view;
+  }
+
+  public static TextView mono(Context context, String value, float size, int color) {
+    TextView view = text(context, value, size, color);
+    view.setTypeface(Typeface.MONOSPACE);
+    view.setFontFeatureSettings("tnum");
+    return view;
+  }
+
+  public static View rule(Context context, int color) {
+    View view = new View(context);
+    view.setBackgroundColor(color);
+    view.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+    view.setMinimumHeight(dp(context, 1));
+    return view;
+  }
+
+  public static GradientDrawable outline(Context context, int fill, int stroke, int radius) {
+    GradientDrawable drawable = shape(context, fill, radius);
+    drawable.setStroke(dp(context, 1), stroke);
+    return drawable;
+  }
+
   public static GradientDrawable shape(Context context, int color, int radius) {
     GradientDrawable drawable = new GradientDrawable();
     drawable.setColor(color);
-    drawable.setCornerRadius(dp(context, radius));
+    drawable.setCornerRadius(dp(context, Math.min(2, radius)));
     return drawable;
   }
 
@@ -91,7 +131,7 @@ public final class Ui {
     Context context = view.getContext();
     view.setBackground(
         new RippleDrawable(
-            ColorStateList.valueOf(dark ? 0x24ffffff : 0x1f145f39),
+            ColorStateList.valueOf(dark ? 0x30ffffff : 0x20000000),
             shape(context, color, radius),
             shape(context, Color.WHITE, radius)));
     view.setClickable(true);
@@ -121,7 +161,7 @@ public final class Ui {
     Button button = new PressButton(context);
     button.setText(label);
     button.setTextSize(14);
-    button.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+    button.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
     button.setAllCaps(false);
     button.setGravity(Gravity.CENTER);
     button.setIncludeFontPadding(false);
@@ -132,16 +172,16 @@ public final class Ui {
     button.setPadding(dp(context, 16), dp(context, 8), dp(context, 16), dp(context, 8));
     button.setElevation(0);
     button.setStateListAnimator(null);
-    int foreground = primary ? Color.WHITE : TEXT;
+    int foreground = primary ? ACTION_INK : TEXT;
     button.setTextColor(
         new ColorStateList(
             new int[][] {new int[] {-android.R.attr.state_enabled}, new int[] {}},
             new int[] {(foreground & 0x00ffffff) | 0x77000000, foreground}));
     button.setBackground(
         new RippleDrawable(
-            ColorStateList.valueOf(primary || dark ? 0x30ffffff : 0x1f145f39),
-            shape(context, primary ? ACCENT : SURFACE, 8),
-            shape(context, Color.WHITE, 8)));
+            ColorStateList.valueOf(primary ? 0x30000000 : (dark ? 0x30ffffff : 0x20000000)),
+            outline(context, primary ? ACTION : SURFACE, primary ? ACTION : BORDER, 2),
+            shape(context, Color.WHITE, 2)));
     return button;
   }
 

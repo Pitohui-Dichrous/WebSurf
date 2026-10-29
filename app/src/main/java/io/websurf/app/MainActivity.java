@@ -24,6 +24,7 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
 import androidx.media3.ui.PlayerView;
 import androidx.webkit.WebViewCompat;
 import androidx.webkit.WebViewFeature;
+import io.websurf.app.download.DownloadNames;
 import io.websurf.app.download.DownloadService;
 import io.websurf.app.download.DownloadStore;
 import java.net.URLEncoder;
@@ -40,7 +41,11 @@ public class MainActivity extends Activity {
   FrameLayout root, webContainer, fullscreenWeb;
   LinearLayout shell, topBar, bottomBar, resourceBar;
   EditText address;
+  boolean addressDark;
   ProgressBar progress;
+  TextView shellMark;
+  ImageView tabGlyph;
+  FrameLayout tabButton;
   TextView resourceText, tabCount;
   Button takeoverButton;
   VideoChrome videoChrome;
@@ -127,31 +132,15 @@ public class MainActivity extends Activity {
     topBar = new LinearLayout(this);
     topBar.setGravity(Gravity.CENTER_VERTICAL);
     topBar.setPadding(dp(8), dp(6), dp(8), dp(6));
-    address = new EditText(this);
-    address.setSingleLine(true);
-    address.setSelectAllOnFocus(true);
-    address.setTextSize(14);
-    address.setTextColor(Ui.TEXT);
-    address.setHintTextColor(Ui.MUTED);
-    address.setHint("搜索或输入网址");
-    address.setContentDescription("搜索或输入网址");
-    address.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
-    address.setImeOptions(EditorInfo.IME_ACTION_GO);
-    address.setPadding(dp(14), 0, dp(10), 0);
-    address.setBackground(Ui.shape(this, Ui.SURFACE, 8));
+    shellMark = Ui.display(this, "WS", 26, Ui.CONTROL);
+    shellMark.setGravity(Gravity.CENTER);
+    shellMark.setContentDescription("WebSurf 菜单");
+    shellMark.setTooltipText("WebSurf 菜单");
+    Ui.ripple(shellMark, Color.TRANSPARENT, 0);
+    shellMark.setOnClickListener(v -> showMenu());
+    topBar.addView(shellMark, lp(48, 48));
+    address = createAddress();
     topBar.addView(address, new LinearLayout.LayoutParams(0, dp(48), 1));
-    address.setOnEditorActionListener(
-        (v, action, event) -> {
-          if (action == EditorInfo.IME_ACTION_GO
-              || (event != null
-                  && event.getKeyCode() == KeyEvent.KEYCODE_ENTER
-                  && event.getAction() == KeyEvent.ACTION_UP)) {
-            navigate(address.getText().toString());
-            hideKeyboard();
-            return true;
-          }
-          return false;
-        });
     refresh = Ui.icon(this, "refresh", "刷新网页");
     topBar.addView(refresh, lp(48, 48));
     refresh.setOnClickListener(
@@ -164,7 +153,7 @@ public class MainActivity extends Activity {
     FrameLayout downloadControl = new FrameLayout(this);
     downloadsButton = Ui.icon(this, "download", "下载任务");
     downloadControl.addView(downloadsButton, new FrameLayout.LayoutParams(dp(48), dp(48)));
-    downloadBadge = Ui.text(this, "", 10, Color.WHITE);
+    downloadBadge = Ui.mono(this, "", 10, Color.BLACK);
     downloadBadge.setGravity(Gravity.CENTER);
     downloadBadge.setBackground(Ui.shape(this, Ui.ACCENT, 8));
     FrameLayout.LayoutParams badgePosition =
@@ -182,15 +171,16 @@ public class MainActivity extends Activity {
     shell.addView(webContainer, new LinearLayout.LayoutParams(-1, 0, 1));
     resourceBar = new LinearLayout(this);
     resourceBar.setGravity(Gravity.CENTER_VERTICAL);
-    resourceBar.setPadding(dp(16), 0, dp(8), 0);
-    resourceBar.setBackgroundColor(Ui.SOFT_ACCENT);
-    resourceText = Ui.text(this, "网页资源", 12, Ui.CONTROL);
+    resourceBar.setPadding(dp(12), dp(6), dp(8), dp(6));
+    resourceBar.setBackgroundColor(Ui.PLANE);
+    resourceText = Ui.text(this, "网页资源", 12, Ui.PLANE_INK);
+    resourceText.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
     resourceText.setMaxLines(2);
     resourceBar.addView(resourceText, new LinearLayout.LayoutParams(0, dp(48), 1));
-    takeoverButton = Ui.button(this, "接管播放", false);
-    takeoverButton.setTextSize(12);
+    takeoverButton = Ui.button(this, "接管播放", true);
+    takeoverButton.setTextSize(13);
     takeoverButton.setAllCaps(false);
-    takeoverButton.setBackground(Ui.shape(this, Ui.SURFACE, 8));
+    takeoverButton.setPadding(dp(8), 0, dp(8), 0);
     resourceBar.addView(takeoverButton, lp(96, 48));
     takeoverButton.setOnClickListener(v -> toggleTakeover());
     ImageButton resBtn = Ui.icon(this, "video", "查看网页资源");
@@ -212,16 +202,31 @@ public class MainActivity extends Activity {
               }
             });
     addNav("home", "主页", () -> navigate(homepage()));
-    FrameLayout tabButton = new FrameLayout(this);
-    ImageButton tabIcon = Ui.icon(this, "tabs", "标签页");
-    tabButton.addView(tabIcon, new FrameLayout.LayoutParams(-1, dp(48)));
-    tabCount = Ui.text(this, "1", 10, Ui.TEXT);
+    tabButton = new FrameLayout(this);
+    Ui.ripple(tabButton, Color.TRANSPARENT, 0);
+    tabButton.setContentDescription("标签页，1 个");
+    tabButton.setTooltipText("标签页");
+    FrameLayout tabMark = new FrameLayout(this);
+    tabMark.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+    tabButton.addView(tabMark, new FrameLayout.LayoutParams(dp(24), dp(24), Gravity.CENTER));
+    tabGlyph = new ImageView(this);
+    tabGlyph.setImageDrawable(new Ui.Icon("tabs", Ui.TEXT));
+    tabGlyph.setScaleType(ImageView.ScaleType.FIT_XY);
+    tabMark.addView(tabGlyph, new FrameLayout.LayoutParams(-1, -1));
+    tabCount = Ui.text(this, "1", 9, Ui.TEXT);
+    tabCount.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
     tabCount.setGravity(Gravity.CENTER);
+    tabCount.setSingleLine(true);
+    tabCount.setAutoSizeTextTypeUniformWithConfiguration(
+        7, 10, 1, android.util.TypedValue.COMPLEX_UNIT_SP);
     tabCount.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-    FrameLayout.LayoutParams countLp = new FrameLayout.LayoutParams(dp(20), dp(18), Gravity.CENTER);
-    tabButton.addView(tabCount, countLp);
+    // The unmodified Lucide icon's front window is (8,8)–(22,22) in its 24×24 viewBox.
+    // Both layers use this one coordinate space, independent of the navigation cell width.
+    FrameLayout.LayoutParams countLp = new FrameLayout.LayoutParams(dp(14), dp(14));
+    countLp.leftMargin = dp(8);
+    countLp.topMargin = dp(8);
+    tabMark.addView(tabCount, countLp);
     tabButton.setOnClickListener(v -> showTabs());
-    tabIcon.setOnClickListener(v -> showTabs());
     bottomBar.addView(tabButton, new LinearLayout.LayoutParams(0, dp(48), 1));
     addNav("more", "菜单", () -> showMenu());
     shell.addView(bottomBar, new LinearLayout.LayoutParams(-1, dp(54)));
@@ -240,6 +245,87 @@ public class MainActivity extends Activity {
     applyChromeTheme();
   }
 
+  EditText createAddress() {
+    EditText field = new EditText(chromeContext());
+    addressDark = Ui.isDark(this);
+    field.setSingleLine(true);
+    field.setSelectAllOnFocus(true);
+    field.setTextSize(13);
+    field.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+    field.setTextColor(Ui.TEXT);
+    field.setHintTextColor(Ui.MUTED);
+    field.setHint("搜索或输入网址");
+    field.setContentDescription("搜索或输入网址");
+    field.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
+    field.setImeOptions(EditorInfo.IME_ACTION_GO);
+    field.setPadding(dp(14), 0, dp(10), 0);
+    field.setBackground(Ui.outline(this, Ui.SURFACE, Ui.BORDER, 2));
+    field.setOnEditorActionListener(
+        (v, action, event) -> {
+          if (action == EditorInfo.IME_ACTION_GO
+              || (event != null
+                  && event.getKeyCode() == KeyEvent.KEYCODE_ENTER
+                  && event.getAction() == KeyEvent.ACTION_UP)) {
+            navigate(v.getText().toString());
+            hideKeyboard();
+            return true;
+          }
+          return false;
+        });
+    return field;
+  }
+
+  /** API 26–28 have no public cursor/handle tint API; replace only the themed text field. */
+  void refreshLegacyAddressTheme() {
+    if (Build.VERSION.SDK_INT >= 29 || addressDark == Ui.isDark(this)) return;
+    EditText previous = address;
+    String value = previous.getText().toString();
+    int start = previous.getSelectionStart(), end = previous.getSelectionEnd();
+    int scrollX = previous.getScrollX(), scrollY = previous.getScrollY();
+    boolean focused = previous.hasFocus();
+    WindowInsetsCompat insets = ViewCompat.getRootWindowInsets(previous);
+    boolean keyboardVisible =
+        focused
+            && previous.hasWindowFocus()
+            && insets != null
+            && insets.isVisible(WindowInsetsCompat.Type.ime());
+    int position = topBar.indexOfChild(previous);
+    ViewGroup.LayoutParams layout = previous.getLayoutParams();
+    EditText replacement = createAddress();
+    replacement.setSelectAllOnFocus(false);
+    replacement.setText(value);
+    topBar.removeView(previous);
+    address = replacement;
+    topBar.addView(replacement, position, layout);
+    if (focused) replacement.requestFocus();
+    if (start >= 0 && end >= 0)
+      replacement.setSelection(Math.min(start, value.length()), Math.min(end, value.length()));
+    replacement.setSelectAllOnFocus(true);
+    replacement.post(
+        () -> {
+          if (address != replacement || !replacement.isAttachedToWindow()) return;
+          replacement.scrollTo(scrollX, scrollY);
+          if (keyboardVisible && replacement.hasFocus() && replacement.hasWindowFocus())
+            getSystemService(InputMethodManager.class)
+                .showSoftInput(replacement, InputMethodManager.SHOW_IMPLICIT);
+        });
+  }
+
+  void updateTaskBranding() {
+    if (Build.VERSION.SDK_INT >= 28) {
+      setTaskDescription(new ActivityManager.TaskDescription("WebSurf", R.drawable.ws_logo, Ui.BG));
+    } else {
+      android.graphics.BitmapFactory.Options options = new android.graphics.BitmapFactory.Options();
+      options.inSampleSize = 8;
+      setTaskDescription(
+          new ActivityManager.TaskDescription(
+              "WebSurf",
+              android.graphics.BitmapFactory.decodeResource(
+                  getResources(), R.drawable.ws_logo, options),
+              Ui.BG));
+    }
+  }
+
   ImageButton addNav(String icon, String label, Runnable action) {
     ImageButton b = Ui.icon(this, icon, label);
     bottomBar.addView(b, new LinearLayout.LayoutParams(0, dp(48), 1));
@@ -249,6 +335,44 @@ public class MainActivity extends Activity {
 
   int dp(float value) {
     return Ui.dp(this, value);
+  }
+
+  Context chromeContext() {
+    return new ContextThemeWrapper(this, Ui.isDark(this) ? R.style.AppThemeDark : R.style.AppTheme);
+  }
+
+  AlertDialog.Builder alert() {
+    return new AlertDialog.Builder(chromeContext());
+  }
+
+  void tintTextInput(EditText field) {
+    field.setHighlightColor(Ui.isDark(this) ? 0x66c0fe03 : 0x33000000);
+    if (Build.VERSION.SDK_INT >= 29) {
+      android.graphics.drawable.Drawable cursor = field.getTextCursorDrawable();
+      if (cursor != null) {
+        cursor = cursor.mutate();
+        cursor.setTint(Ui.CONTROL);
+        field.setTextCursorDrawable(cursor);
+      }
+      android.graphics.drawable.Drawable left = field.getTextSelectHandleLeft();
+      android.graphics.drawable.Drawable right = field.getTextSelectHandleRight();
+      android.graphics.drawable.Drawable middle = field.getTextSelectHandle();
+      if (left != null) {
+        left = left.mutate();
+        left.setTint(Ui.CONTROL);
+        field.setTextSelectHandleLeft(left);
+      }
+      if (right != null) {
+        right = right.mutate();
+        right.setTint(Ui.CONTROL);
+        field.setTextSelectHandleRight(right);
+      }
+      if (middle != null) {
+        middle = middle.mutate();
+        middle.setTint(Ui.CONTROL);
+        field.setTextSelectHandle(middle);
+      }
+    }
   }
 
   LinearLayout.LayoutParams lp(int w, int h) {
@@ -405,7 +529,7 @@ public class MainActivity extends Activity {
             String url = request.getUrl().toString();
             if (WebResource.isHttp(url)) return false;
             if (request.hasGesture() && request.isForMainFrame()) {
-              new AlertDialog.Builder(MainActivity.this)
+              alert()
                   .setTitle("打开其他应用")
                   .setMessage(url)
                   .setNegativeButton("取消", null)
@@ -822,6 +946,7 @@ public class MainActivity extends Activity {
     back.setEnabled(current.web.canGoBack());
     forward.setEnabled(current.web.canGoForward());
     tabCount.setText(String.valueOf(tabs.size()));
+    tabButton.setContentDescription("标签页，" + tabs.size() + " 个");
   }
 
   void updateResourceBar() {
@@ -833,7 +958,6 @@ public class MainActivity extends Activity {
             : "网页资源 · " + current.resources.size());
     if (takeoverButton != null) {
       takeoverButton.setText(player != null && playerTab == current ? "网页播放" : "接管播放");
-      takeoverButton.setTextColor(Ui.CONTROL);
       takeoverButton.setEnabled(player != null || !current.videos.isEmpty());
     }
   }
@@ -1405,21 +1529,65 @@ public class MainActivity extends Activity {
 
   LinearLayout sheet(String title) {
     if (activeSheet != null) activeSheet.dismiss();
-    Dialog dialog = new Dialog(this);
+    Dialog dialog =
+        new Dialog(
+            new ContextThemeWrapper(
+                this, Ui.isDark(this) ? R.style.AppThemeDark : R.style.AppTheme));
+    dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
     activeSheet = dialog;
     LinearLayout box = new LinearLayout(this);
     box.setOrientation(LinearLayout.VERTICAL);
-    box.setPadding(dp(16), dp(8), dp(16), dp(16));
-    box.setBackground(Ui.shape(this, Ui.BG, 12));
+    box.setClipToPadding(false);
+    box.setPadding(dp(16), 0, dp(16), dp(16));
+    box.setBackgroundColor(Ui.BG);
     LinearLayout header = new LinearLayout(this);
-    header.setGravity(Gravity.CENTER_VERTICAL);
-    TextView heading = Ui.text(this, title, 17, Ui.TEXT);
-    heading.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-    header.addView(heading, new LinearLayout.LayoutParams(0, dp(48), 1));
+    header.setOrientation(LinearLayout.VERTICAL);
+    header.setPadding(dp(16), dp(6), dp(8), dp(12));
+    header.setBackgroundColor(Ui.PLANE);
+    LinearLayout topline = new LinearLayout(this);
+    topline.setGravity(Gravity.CENTER_VERTICAL);
+    TextView heading =
+        Ui.text(
+            this,
+            title.equals("WebSurf") ? "酸性设计  /  " + BuildConfig.VERSION_NAME : title,
+            14,
+            Ui.PLANE_INK);
+    heading.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
+    heading.setMaxLines(2);
+    heading.setEllipsize(TextUtils.TruncateAt.END);
+    topline.addView(heading, new LinearLayout.LayoutParams(0, dp(48), 1));
     ImageButton close = Ui.icon(this, "close", "关闭" + title);
-    header.addView(close, lp(48, 48));
+    close.setImageTintList(android.content.res.ColorStateList.valueOf(Ui.PLANE_INK));
+    topline.addView(close, lp(48, 48));
     close.setOnClickListener(v -> dialog.dismiss());
-    box.addView(header);
+    header.addView(topline, new LinearLayout.LayoutParams(-1, -2));
+    LinearLayout displayLine = new LinearLayout(this);
+    displayLine.setGravity(Gravity.CENTER_VERTICAL);
+    TextView display =
+        Ui.display(this, displayTitle(title), title.equals("WebSurf") ? 64 : 48, Ui.PLANE_INK);
+    display.setSingleLine(true);
+    display.setAutoSizeTextTypeUniformWithConfiguration(
+        26, title.equals("WebSurf") ? 64 : 48, 1, android.util.TypedValue.COMPLEX_UNIT_SP);
+    display.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+    displayLine.addView(
+        display, new LinearLayout.LayoutParams(0, dp(title.equals("WebSurf") ? 72 : 54), 1));
+    if (title.equals("WebSurf")) {
+      ImageView logo = new ImageView(this);
+      logo.setImageResource(R.drawable.ws_logo);
+      logo.setScaleType(ImageView.ScaleType.FIT_CENTER);
+      logo.setContentDescription("WebSurf");
+      LinearLayout.LayoutParams logoParams = lp(72, 72);
+      logoParams.setMarginStart(dp(12));
+      logoParams.setMarginEnd(dp(8));
+      displayLine.addView(logo, logoParams);
+    }
+    header.addView(displayLine, new LinearLayout.LayoutParams(-1, -2));
+    LinearLayout.LayoutParams headerParams = new LinearLayout.LayoutParams(-1, -2);
+    headerParams.leftMargin = -dp(16);
+    headerParams.rightMargin = -dp(16);
+    headerParams.bottomMargin = dp(16);
+    box.addView(header, headerParams);
+    box.addView(Ui.rule(this, Ui.BORDER), new LinearLayout.LayoutParams(-1, dp(1)));
     dialog.setContentView(box);
     Window window = dialog.getWindow();
     if (window != null) {
@@ -1427,8 +1595,11 @@ public class MainActivity extends Activity {
       window.setGravity(Gravity.BOTTOM);
       window.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
       WindowManager.LayoutParams attr = window.getAttributes();
-      attr.dimAmount = .28f;
+      attr.dimAmount = .52f;
+      attr.windowAnimations = 0;
       window.setAttributes(attr);
+      window.setNavigationBarColor(Ui.BG);
+      window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
     }
     dialog.setOnDismissListener(
         d -> {
@@ -1444,6 +1615,20 @@ public class MainActivity extends Activity {
     return box;
   }
 
+  String displayTitle(String title) {
+    return switch (title) {
+      case "WebSurf" -> "WEBSURF";
+      case "网页资源" -> "RESOURCES";
+      case "下载" -> "DOWNLOADS";
+      case "设置" -> "SETTINGS";
+      case "标签页" -> "TABS";
+      case "书签与历史" -> "LIBRARY";
+      case "选择网页视频" -> "VIDEO SOURCE";
+      case "下载并发" -> "CONNECTIONS";
+      default -> "WEBSURF";
+    };
+  }
+
   LinearLayout scrollBody(LinearLayout box) {
     ScrollView scroll =
         new ScrollView(this) {
@@ -1457,7 +1642,7 @@ public class MainActivity extends Activity {
                         root.getHeight()
                             - root.getPaddingTop()
                             - root.getPaddingBottom()
-                            - dp(180)));
+                            - dp(240)));
             if (View.MeasureSpec.getMode(heightSpec) != View.MeasureSpec.UNSPECIFIED)
               limit = Math.min(limit, View.MeasureSpec.getSize(heightSpec));
             super.onMeasure(
@@ -1473,7 +1658,7 @@ public class MainActivity extends Activity {
   }
 
   TextView note(LinearLayout box, String text) {
-    TextView label = Ui.text(this, text, 12, Ui.MUTED);
+    TextView label = Ui.text(this, text, 13, Ui.MUTED);
     label.setPadding(0, dp(8), 0, dp(8));
     box.addView(label, new LinearLayout.LayoutParams(-1, -2));
     return label;
@@ -1481,11 +1666,28 @@ public class MainActivity extends Activity {
 
   Button action(LinearLayout box, String title, Runnable callback) {
     Button b = Ui.button(this, title, false);
-    LinearLayout.LayoutParams actionSpace = new LinearLayout.LayoutParams(-1, dp(48));
-    actionSpace.topMargin = dp(6);
+    b.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+    b.setCompoundDrawablePadding(dp(12));
+    Ui.Icon glyph = new Ui.Icon(actionIcon(title), Ui.TEXT);
+    glyph.setBounds(0, 0, dp(20), dp(20));
+    b.setCompoundDrawablesRelative(glyph, null, null, null);
+    LinearLayout.LayoutParams actionSpace = new LinearLayout.LayoutParams(-1, -2);
+    actionSpace.topMargin = dp(8);
     box.addView(b, actionSpace);
     b.setOnClickListener(v -> callback.run());
     return b;
+  }
+
+  String actionIcon(String title) {
+    if (title.contains("通知")) return "bell";
+    if (title.contains("下载") || title.contains("并发")) return "download";
+    if (title.contains("书签") || title.contains("历史")) return "bookmark";
+    if (title.contains("复制") || title.contains("地址")) return "copy";
+    if (title.contains("设置")) return "settings";
+    if (title.contains("主页")) return "home";
+    if (title.contains("标签")) return "tabs";
+    if (title.contains("小窗")) return "float";
+    return "video";
   }
 
   void showResources(String initialFilter) {
@@ -1500,6 +1702,7 @@ public class MainActivity extends Activity {
     filters.addView(choices);
     LinearLayout.LayoutParams filterLayout = new LinearLayout.LayoutParams(-1, -2);
     filterLayout.bottomMargin = dp(16);
+    filterLayout.topMargin = dp(12);
     box.addView(filters, filterLayout);
     LinearLayout body = scrollBody(box);
     body.setTag("resource-list");
@@ -1534,6 +1737,7 @@ public class MainActivity extends Activity {
         };
     for (String name : new String[] {"视频", "音频", "图片", "其他", "全部"}) {
       Button b = Ui.button(this, name, name.equals(initialFilter));
+      b.setSelected(name.equals(initialFilter));
       b.setSingleLine(true);
       b.setPadding(dp(8), 0, dp(8), 0);
       LinearLayout.LayoutParams p = lp(68, 48);
@@ -1545,9 +1749,10 @@ public class MainActivity extends Activity {
             for (int i = 0; i < choices.getChildCount(); i++) {
               Button child = (Button) choices.getChildAt(i);
               boolean selected = child == b;
-              child.setTextColor(selected ? Color.WHITE : Ui.TEXT);
+              child.setSelected(selected);
+              child.setTextColor(selected ? Ui.ACTION_INK : Ui.TEXT);
               child.setBackgroundTintList(null);
-              Ui.ripple(child, selected ? Ui.ACCENT : Ui.SURFACE, 8);
+              Ui.ripple(child, selected ? Ui.ACTION : Ui.SURFACE, 2);
             }
             render.run();
           });
@@ -1569,7 +1774,7 @@ public class MainActivity extends Activity {
         r.isVideo() || "音频".equals(r.kind)
             ? new String[] {"播放视频", "下载", "复制链接", "查看地址"}
             : new String[] {"打开预览", "下载", "复制链接", "查看地址"};
-    new AlertDialog.Builder(this)
+    alert()
         .setTitle(r.label())
         .setItems(
             options,
@@ -1581,7 +1786,7 @@ public class MainActivity extends Activity {
               } else if (index == 1) confirmDownload(r);
               else if (index == 2) copy(r.url);
               else
-                new AlertDialog.Builder(this)
+                alert()
                     .setTitle("资源地址")
                     .setMessage(r.url)
                     .setPositiveButton("复制", (a, b) -> copy(r.url))
@@ -1597,11 +1802,12 @@ public class MainActivity extends Activity {
         showDownloadFeedback("正在下载", existing);
         return;
       }
+    String downloadTitle = downloadTitle(r);
     new AlertDialog.Builder(
             new ContextThemeWrapper(
                 this, Ui.isDark(this) ? R.style.AppThemeDark : R.style.AppTheme))
         .setTitle("下载")
-        .setMessage(r.label())
+        .setMessage(downloadTitle)
         .setNegativeButton("取消", null)
         .setPositiveButton(
             "下载",
@@ -1615,12 +1821,7 @@ public class MainActivity extends Activity {
               }
               try {
                 String id =
-                    DownloadService.enqueue(
-                        this,
-                        r.url,
-                        r.title.isBlank() ? r.label() : r.title,
-                        mediaHeadersFor(r),
-                        r.mime);
+                    DownloadService.enqueue(this, r.url, downloadTitle, mediaHeadersFor(r), r.mime);
                 DownloadStore.Job job = DownloadStore.get(this, id);
                 if (job != null) {
                   downloadStates.put(id, job.state);
@@ -1634,6 +1835,22 @@ public class MainActivity extends Activity {
               }
             })
         .show();
+  }
+
+  String downloadTitle(WebResource resource) {
+    String pageTitle = "";
+    if (resource.isVideo() || "音频".equals(resource.kind)) {
+      for (BrowserTab tab : tabs) {
+        if (tab.resources.get(resource.url) == resource) {
+          pageTitle = tab.title;
+          break;
+        }
+      }
+      if (pageTitle.isBlank() && resource == playing && playerTab != null)
+        pageTitle = playerTab.title;
+    }
+    String name = DownloadNames.meaningfulTitle(resource.title, pageTitle, resource.label());
+    return name.isBlank() ? (resource.isVideo() ? "WebSurf 视频" : "WebSurf 下载") : name;
   }
 
   void refreshDownloadBadge() {
@@ -1721,7 +1938,7 @@ public class MainActivity extends Activity {
           }
 
           public void remove(DownloadStore.Job job) {
-            new AlertDialog.Builder(MainActivity.this)
+            alert()
                 .setTitle("移除记录？")
                 .setMessage("已下载的文件会保留")
                 .setNegativeButton("取消", null)
@@ -1831,12 +2048,24 @@ public class MainActivity extends Activity {
   void showTabs() {
     LinearLayout box = sheet("标签页");
     LinearLayout body = scrollBody(box);
+    int tabIndex = 0;
     for (BrowserTab tab : new ArrayList<>(tabs)) {
       LinearLayout row = new LinearLayout(this);
       row.setGravity(Gravity.CENTER_VERTICAL);
       row.setPadding(dp(8), 0, 0, 0);
-      row.setBackground(Ui.shape(this, tab == current ? Ui.SOFT_ACCENT : Ui.SURFACE, 8));
+      row.setBackground(Ui.outline(this, Ui.SURFACE, tab == current ? Ui.CONTROL : Ui.BORDER, 0));
+      row.setSelected(tab == current);
+      TextView index =
+          Ui.display(
+              this,
+              String.format(Locale.ROOT, "%02d", ++tabIndex),
+              30,
+              tab == current ? Ui.CONTROL : Ui.MUTED);
+      index.setGravity(Gravity.CENTER);
+      index.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+      row.addView(index, lp(48, 64));
       TextView name = Ui.text(this, tab.title, 14, Ui.TEXT);
+      name.setTypeface(tab == current ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
       name.setMaxLines(2);
       row.addView(name, new LinearLayout.LayoutParams(0, dp(64), 1));
       name.setOnClickListener(
@@ -1866,19 +2095,47 @@ public class MainActivity extends Activity {
 
   void showMenu() {
     LinearLayout box = sheet("WebSurf");
-    action(box, "网页资源", () -> showResources("全部"));
-    action(box, "下载", () -> showDownloads());
+    LinearLayout body = scrollBody(box);
+    LinearLayout portals = new LinearLayout(this);
+    int resources = current == null ? 0 : current.resources.size();
+    List<DownloadStore.Job> jobs = DownloadStore.list(this);
+    long active = jobs.stream().filter(DownloadStore.Job::active).count();
+    portals.addView(
+        menuTile("网页资源", "video", resources, () -> showResources("全部")),
+        new LinearLayout.LayoutParams(0, dp(132), 1));
+    LinearLayout.LayoutParams second = new LinearLayout.LayoutParams(0, dp(132), 1);
+    second.leftMargin = dp(8);
+    portals.addView(menuTile("下载", "download", jobs.size(), () -> showDownloads()), second);
+    LinearLayout.LayoutParams portalParams = new LinearLayout.LayoutParams(-1, -2);
+    portalParams.topMargin = dp(12);
+    portalParams.bottomMargin = dp(4);
+    body.addView(portals, portalParams);
+    if (active > 0) note(body, active + " 个任务正在下载");
+    Button takeover = Ui.button(this, player != null ? "返回网页播放" : "接管网页视频", true);
+    takeover.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+    Ui.Icon playIcon = new Ui.Icon("play", Ui.ACTION_INK);
+    playIcon.setBounds(0, 0, dp(22), dp(22));
+    takeover.setCompoundDrawablesRelative(playIcon, null, null, null);
+    takeover.setCompoundDrawablePadding(dp(12));
+    LinearLayout.LayoutParams takeoverParams = new LinearLayout.LayoutParams(-1, -2);
+    takeoverParams.topMargin = dp(8);
+    body.addView(takeover, takeoverParams);
+    takeover.setOnClickListener(
+        v -> {
+          activeSheet.dismiss();
+          toggleTakeover();
+        });
     action(
-        box,
+        body,
         "添加书签",
         () -> {
           saveBookmark();
           activeSheet.dismiss();
         });
-    action(box, "书签与历史", () -> showSaved());
+    action(body, "书签与历史", () -> showSaved());
     if (playing != null)
       action(
-          box,
+          body,
           "系统小窗",
           () -> {
             activeSheet.dismiss();
@@ -1886,30 +2143,55 @@ public class MainActivity extends Activity {
                 new PictureInPictureParams.Builder().setAspectRatio(new Rational(16, 9)).build());
           });
     action(
-        box,
-        player != null ? "返回网页播放" : "接管网页视频",
-        () -> {
-          activeSheet.dismiss();
-          toggleTakeover();
-        });
-    action(
-        box,
+        body,
         "复制网页链接",
         () -> {
           copy(current.url);
           activeSheet.dismiss();
         });
-    action(box, "设置", () -> showSettings());
+    action(body, "设置", () -> showSettings());
+  }
+
+  View menuTile(String label, String icon, int count, Runnable callback) {
+    LinearLayout tile = new LinearLayout(this);
+    tile.setOrientation(LinearLayout.VERTICAL);
+    tile.setPadding(dp(14), dp(12), dp(14), dp(12));
+    Ui.ripple(tile, Ui.SURFACE, 2);
+    tile.setContentDescription(label + "，" + count);
+    tile.setOnClickListener(v -> callback.run());
+    LinearLayout top = new LinearLayout(this);
+    top.setGravity(Gravity.CENTER_VERTICAL);
+    TextView name = Ui.text(this, label, 15, Ui.TEXT);
+    name.setTypeface(Typeface.DEFAULT_BOLD);
+    name.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+    top.addView(name, new LinearLayout.LayoutParams(0, -2, 1));
+    ImageView glyph = new ImageView(this);
+    glyph.setImageDrawable(new Ui.Icon(icon, Ui.CONTROL));
+    glyph.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+    top.addView(glyph, lp(24, 24));
+    tile.addView(top);
+    TextView value = Ui.display(this, String.format(Locale.ROOT, "%02d", count), 56, Ui.CONTROL);
+    value.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+    LinearLayout.LayoutParams countParams = new LinearLayout.LayoutParams(-1, 0, 1);
+    value.setGravity(Gravity.BOTTOM);
+    tile.addView(value, countParams);
+    tile.addView(Ui.rule(this, Ui.BORDER), new LinearLayout.LayoutParams(-1, dp(1)));
+    return tile;
   }
 
   void showSettings() {
     LinearLayout box = sheet("设置");
     LinearLayout body = scrollBody(box);
+    sectionLabel(body, "浏览");
     note(body, "主页");
-    EditText home = new EditText(this);
+    EditText home = new EditText(chromeContext());
     home.setSingleLine(true);
     home.setTextSize(14);
     home.setTextColor(Ui.TEXT);
+    home.setHintTextColor(Ui.MUTED);
+    home.setBackground(Ui.outline(this, Ui.SURFACE, Ui.BORDER, 2));
+    home.setPadding(dp(12), 0, dp(12), 0);
+    tintTextInput(home);
     home.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
     home.setText(homepage());
     home.setContentDescription("主页地址");
@@ -1935,6 +2217,7 @@ public class MainActivity extends Activity {
           prefs.edit().putBoolean("auto_play", checked).apply();
           if (!checked) closePlayer(true, true);
         });
+    sectionLabel(body, "下载");
     boolean notifications = getSystemService(NotificationManager.class).areNotificationsEnabled();
     action(
         body,
@@ -1948,30 +2231,9 @@ public class MainActivity extends Activity {
             showError("无法打开通知设置", error);
           }
         });
-    int[] threadOptions = {1, 2, 4, 8, 16};
     int threads = Math.max(1, Math.min(16, prefs.getInt("download_threads", 8)));
-    int selectedThread = 0;
-    for (int i = 0; i < threadOptions.length; i++)
-      if (threadOptions[i] <= threads) selectedThread = i;
-    final int selectedThreadIndex = selectedThread;
-    action(
-        body,
-        "下载并发 · " + threads + " 路",
-        () ->
-            new AlertDialog.Builder(
-                    new ContextThemeWrapper(
-                        this, Ui.isDark(this) ? R.style.AppThemeDark : R.style.AppTheme))
-                .setTitle("下载并发")
-                .setSingleChoiceItems(
-                    new String[] {"1 路", "2 路", "4 路", "8 路", "16 路"},
-                    selectedThreadIndex,
-                    (dialog, index) -> {
-                      prefs.edit().putInt("download_threads", threadOptions[index]).apply();
-                      dialog.dismiss();
-                      showSettings();
-                    })
-                .setNegativeButton("取消", null)
-                .show());
+    action(body, "下载并发 · " + threads + " 路", this::showConnections);
+    sectionLabel(body, "外观与网页");
     addSwitch(
         body,
         "深色外观",
@@ -2000,11 +2262,43 @@ public class MainActivity extends Activity {
           toast("刷新网页后生效");
         });
     android.content.pm.PackageInfo provider = WebView.getCurrentWebViewPackage();
+    sectionLabel(body, "关于");
     note(
         body,
         "Chromium WebView\n"
             + (provider == null ? "系统提供" : provider.packageName + " · " + provider.versionName));
     note(body, "WebSurf " + BuildConfig.VERSION_NAME);
+  }
+
+  void sectionLabel(LinearLayout body, String title) {
+    TextView label = Ui.text(this, title, 12, Ui.MUTED);
+    label.setTypeface(Typeface.DEFAULT_BOLD);
+    label.setPadding(0, dp(18), 0, dp(8));
+    body.addView(label, new LinearLayout.LayoutParams(-1, -2));
+    body.addView(Ui.rule(this, Ui.BORDER), new LinearLayout.LayoutParams(-1, dp(1)));
+  }
+
+  void showConnections() {
+    LinearLayout body = scrollBody(sheet("下载并发"));
+    int selected = prefs.getInt("download_threads", 8);
+    for (int count : new int[] {1, 2, 4, 8, 16}) {
+      Button choice =
+          action(
+              body,
+              count + " 路",
+              () -> {
+                prefs.edit().putInt("download_threads", count).apply();
+                showSettings();
+              });
+      choice.setSelected(count == selected);
+      if (count == selected) {
+        choice.setTextColor(Ui.ACTION_INK);
+        Ui.ripple(choice, Ui.ACTION, 2);
+        Ui.Icon check = new Ui.Icon("check", Ui.ACTION_INK);
+        check.setBounds(0, 0, dp(20), dp(20));
+        choice.setCompoundDrawablesRelative(check, null, null, null);
+      } else choice.setCompoundDrawablesRelative(null, null, null, null);
+    }
   }
 
   interface Checked {
@@ -2016,31 +2310,52 @@ public class MainActivity extends Activity {
     control.setText(title);
     control.setTextSize(14);
     control.setTextColor(Ui.TEXT);
-    control.setMinHeight(dp(56));
+    control.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+    control.setPadding(dp(12), dp(8), dp(12), dp(8));
+    control.setSwitchPadding(dp(16));
+    control.setMinHeight(dp(60));
+    control.setThumbTintList(
+        new android.content.res.ColorStateList(
+            new int[][] {new int[] {android.R.attr.state_checked}, new int[] {}},
+            new int[] {Ui.ACTION, Ui.MUTED}));
+    control.setTrackTintList(
+        new android.content.res.ColorStateList(
+            new int[][] {new int[] {android.R.attr.state_checked}, new int[] {}},
+            new int[] {Ui.isDark(this) ? 0xff596b21 : 0xffa0a0a0, Ui.BORDER}));
     control.setChecked(initial);
     box.addView(control, new LinearLayout.LayoutParams(-1, -2));
     control.setOnCheckedChangeListener((b, checked) -> callback.run(checked));
+    box.addView(Ui.rule(this, Ui.BORDER), new LinearLayout.LayoutParams(-1, dp(1)));
   }
 
   void applyChromeTheme() {
+    refreshLegacyAddressTheme();
     root.setBackgroundColor(Ui.BG);
     topBar.setBackgroundColor(Ui.BG);
     bottomBar.setBackgroundColor(Ui.BG);
-    resourceBar.setBackgroundColor(Ui.SOFT_ACCENT);
-    resourceText.setTextColor(Ui.CONTROL);
+    resourceBar.setBackground(Ui.outline(this, Ui.PLANE, Ui.BORDER, 0));
+    resourceText.setTextColor(Ui.PLANE_INK);
+    shellMark.setTextColor(Ui.CONTROL);
     takeoverButton.setBackgroundTintList(null);
-    Ui.ripple(takeoverButton, Ui.SURFACE, 8);
+    Ui.ripple(takeoverButton, Ui.ACTION, 2);
     takeoverButton.setTextColor(
         new android.content.res.ColorStateList(
             new int[][] {new int[] {-android.R.attr.state_enabled}, new int[] {}},
-            new int[] {Ui.MUTED, Ui.CONTROL}));
+            new int[] {Ui.isDark(this) ? 0xff4c6400 : 0xff7c9e21, Ui.ACTION_INK}));
     address.setTextColor(Ui.TEXT);
     address.setHintTextColor(Ui.MUTED);
-    address.setBackground(Ui.shape(this, Ui.SURFACE, 8));
+    address.setBackground(Ui.outline(this, Ui.SURFACE, Ui.BORDER, 2));
+    tintTextInput(address);
     tabCount.setTextColor(Ui.TEXT);
+    tabGlyph.setImageTintList(android.content.res.ColorStateList.valueOf(Ui.TEXT));
     tintIcons(topBar);
     tintIcons(bottomBar);
     tintIcons(resourceBar);
+    for (int i = 0; i < resourceBar.getChildCount(); i++)
+      if (resourceBar.getChildAt(i) instanceof ImageButton icon)
+        icon.setImageTintList(android.content.res.ColorStateList.valueOf(Ui.PLANE_INK));
+    downloadBadge.setTextColor(Color.BLACK);
+    downloadBadge.setBackground(Ui.shape(this, Ui.ACCENT, 0));
     getWindow().setStatusBarColor(Ui.BG);
     getWindow().setNavigationBarColor(Ui.BG);
     getWindow()
@@ -2050,6 +2365,7 @@ public class MainActivity extends Activity {
                 ? 0
                 : View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
     for (BrowserTab tab : tabs) sendPageTheme(tab);
+    updateTaskBranding();
   }
 
   void sendPageTheme(BrowserTab tab) {
@@ -2196,6 +2512,7 @@ public class MainActivity extends Activity {
   @Override
   protected void onResume() {
     super.onResume();
+    updateTaskBranding();
     resumed = true;
     if (pendingDownloadFeedback != null) {
       DownloadStore.Job job = pendingDownloadFeedback;
@@ -2273,7 +2590,7 @@ public class MainActivity extends Activity {
   }
 
   void showError(String title, Exception e) {
-    new AlertDialog.Builder(this)
+    alert()
         .setTitle(title)
         .setMessage(e.getMessage() == null ? e.toString() : e.getMessage())
         .setPositiveButton("关闭", null)

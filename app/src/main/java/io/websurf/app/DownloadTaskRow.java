@@ -2,6 +2,7 @@ package io.websurf.app;
 
 import android.content.Context;
 import android.content.res.ColorStateList;
+import android.graphics.Typeface;
 import android.text.TextUtils;
 import android.view.Gravity;
 import android.widget.Button;
@@ -25,7 +26,7 @@ final class DownloadTaskRow extends LinearLayout {
     void remove(DownloadStore.Job job);
   }
 
-  private final TextView title, status, metrics, error;
+  private final TextView title, status, progressValue, transferRate, metrics, error;
   private final ProgressBar progress;
   private final LinearLayout actions;
   private final Actions callback;
@@ -37,31 +38,54 @@ final class DownloadTaskRow extends LinearLayout {
     super(context);
     this.callback = callback;
     setOrientation(VERTICAL);
-    setPadding(dp(12), dp(12), dp(12), dp(8));
-    setBackground(Ui.shape(context, Ui.SURFACE, 6));
-    title = Ui.text(context, "", 14, Ui.TEXT);
+    setPadding(dp(14), dp(14), dp(14), dp(12));
+    setBackground(Ui.outline(context, Ui.SURFACE, Ui.BORDER, 0));
+    title = Ui.text(context, "", 15, Ui.TEXT);
+    title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
     title.setMaxLines(2);
     title.setEllipsize(TextUtils.TruncateAt.END);
     addView(title, new LayoutParams(-1, -2));
-    status = Ui.text(context, "", 12, Ui.CONTROL);
-    status.setPadding(0, dp(8), 0, dp(4));
-    addView(status);
+
+    LinearLayout signal = new LinearLayout(context);
+    signal.setGravity(Gravity.CENTER_VERTICAL);
+    signal.setPadding(0, dp(10), 0, dp(7));
+    addView(signal, new LayoutParams(-1, -2));
+    progressValue = Ui.display(context, "", 42, Ui.CONTROL);
+    progressValue.setSingleLine(true);
+    signal.addView(progressValue, new LayoutParams(-2, -2));
+    LinearLayout stateInfo = new LinearLayout(context);
+    stateInfo.setOrientation(VERTICAL);
+    stateInfo.setGravity(Gravity.RIGHT | Gravity.CENTER_VERTICAL);
+    LayoutParams stateParams = new LayoutParams(0, -2, 1);
+    stateParams.leftMargin = dp(12);
+    signal.addView(stateInfo, stateParams);
+    status = Ui.text(context, "", 13, Ui.TEXT);
+    status.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+    status.setGravity(Gravity.RIGHT);
+    stateInfo.addView(status, new LayoutParams(-1, -2));
+    transferRate = Ui.mono(context, "", 12, Ui.MUTED);
+    transferRate.setGravity(Gravity.RIGHT);
+    transferRate.setPadding(0, dp(6), 0, 0);
+    stateInfo.addView(transferRate, new LayoutParams(-1, -2));
+
     progress = new ProgressBar(context, null, android.R.attr.progressBarStyleHorizontal);
     progress.setMax(100);
-    progress.setProgressTintList(ColorStateList.valueOf(Ui.ACCENT));
-    LayoutParams bar = new LayoutParams(-1, dp(4));
-    bar.topMargin = dp(4);
-    bar.bottomMargin = dp(8);
+    progress.setProgressTintList(ColorStateList.valueOf(Ui.ACTION));
+    progress.setIndeterminateTintList(ColorStateList.valueOf(Ui.ACTION));
+    progress.setProgressBackgroundTintList(ColorStateList.valueOf(Ui.BORDER));
+    LayoutParams bar = new LayoutParams(-1, dp(6));
+    bar.bottomMargin = dp(10);
     addView(progress, bar);
-    metrics = Ui.text(context, "", 12, Ui.MUTED);
-    metrics.setMaxLines(2);
-    addView(metrics);
+    metrics = Ui.mono(context, "", 11, Ui.MUTED);
+    metrics.setMaxLines(3);
+    addView(metrics, new LayoutParams(-1, -2));
     error = Ui.text(context, "", 12, Ui.isDark(context) ? 0xffffb4ab : Ui.RED);
     error.setTextIsSelectable(true);
-    error.setPadding(0, dp(8), 0, dp(4));
-    addView(error);
+    error.setPadding(0, dp(10), 0, dp(2));
+    addView(error, new LayoutParams(-1, -2));
     actions = new LinearLayout(context);
     actions.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+    actions.setPadding(0, dp(12), 0, 0);
     addView(actions, new LayoutParams(-1, -2));
   }
 
@@ -70,11 +94,14 @@ final class DownloadTaskRow extends LinearLayout {
     title.setText(value.title);
     title.setContentDescription(value.title);
     title.setTooltipText(value.title);
-    String percent =
-        value.active() && !"queued".equals(value.state) && value.progress > 0
-            ? " · " + value.progress + "%"
-            : "";
-    status.setText(value.stateLabel() + percent);
+    boolean completed = "completed".equals(value.state);
+    boolean measured = completed || value.total > 0 || value.totalParts > 0 || value.progress > 0;
+    progressValue.setText(completed ? "100%" : measured ? value.progress + "%" : "—");
+    progressValue.setContentDescription(
+        measured ? "下载进度 " + (completed ? 100 : value.progress) + "%" : "下载总量未知");
+    status.setText(value.stateLabel());
+    status.setTextColor(
+        "failed".equals(value.state) ? (Ui.isDark(getContext()) ? 0xffffb4ab : Ui.RED) : Ui.TEXT);
     progress.setVisibility(value.active() ? VISIBLE : GONE);
     progress.setIndeterminate(
         "queued".equals(value.state)
@@ -82,11 +109,14 @@ final class DownloadTaskRow extends LinearLayout {
     progress.setProgress(value.progress);
     String detail = bytes(value.bytes) + (value.total > 0 ? " / " + bytes(value.total) : "");
     if (value.totalParts > 0)
-      detail += " · " + value.completedParts + " / " + value.totalParts + " 分片";
+      detail += "\n" + value.completedParts + " / " + value.totalParts + " 分片";
+    String rate = "";
     if ("downloading".equals(value.state)) {
-      if (value.bytesPerSecond > 0) detail += "\n" + bytes(value.bytesPerSecond) + "/s";
-      if (value.connections > 0) detail += " · " + value.connections + " 路";
+      if (value.bytesPerSecond > 0) rate = bytes(value.bytesPerSecond) + "/s";
+      if (value.connections > 0) rate += (rate.isEmpty() ? "" : "\n") + value.connections + " 路";
     }
+    transferRate.setText(rate);
+    transferRate.setVisibility(rate.isEmpty() ? GONE : VISIBLE);
     metrics.setText(detail);
     error.setText(value.error);
     error.setVisibility(value.error == null || value.error.isBlank() ? GONE : VISIBLE);
@@ -110,8 +140,12 @@ final class DownloadTaskRow extends LinearLayout {
   }
 
   private void addAction(String label, Runnable click) {
-    Button button = Ui.button(getContext(), label, false);
-    LayoutParams params = new LayoutParams(-2, dp(48));
+    Button button = Ui.button(getContext(), label, actions.getChildCount() == 0);
+    button.setMinWidth(0);
+    button.setMinimumWidth(0);
+    button.setPadding(dp(10), dp(8), dp(10), dp(8));
+    button.setMaxLines(1);
+    LayoutParams params = new LayoutParams(0, dp(48), 1);
     params.leftMargin = actions.getChildCount() == 0 ? 0 : dp(8);
     actions.addView(button, params);
     button.setOnClickListener(v -> click.run());

@@ -6,6 +6,10 @@ Java compatibility support is provided by [desugar_jdk_libs](https://github.com/
 
 System WebView is supplied by the device and uses the Chromium project; its notices and licenses are provided with that system component.
 
-WebSurf's UI colors and layout conventions follow the user's MediaMaster project. WebSurf's line icons and launcher artwork are original vector drawings. No QQ Browser code, graphics, fonts, native libraries or online scripts are included in the application or source delivery.
+The acid-design branch uses an original WebSurf interface composition. Action icons use official Lucide SVG geometry from commit be09619c1c1124ad09c19fc3e87ee3b939409bbd under ISC and Feather-derived MIT licenses. The complete upstream license is bundled as Lucide-LICENSE.txt.
+
+Display typography uses unmodified Barlow Condensed ExtraBold, Copyright 2017 The Barlow Project Authors (https://github.com/jpt/barlow), under the SIL Open Font License 1.1. The full license and source details are bundled as Barlow-Condensed-OFL.txt and Barlow-Condensed-SOURCE.txt. Chinese labels use the device's native CJK font.
+
+The application icon is the user-supplied WS.png, used without modification. It is a separate user-provided asset, not part of the Lucide or Barlow licenses. No QQ Browser code, graphics, fonts, native libraries or online scripts, and no Marathon artwork or proprietary fonts, are included in the application or source delivery.
 
 REA and JADX were used as analysis references/tools only. They are not application dependencies. Android fixture media are locally generated test patterns and synthetic audio, included only in test sources.

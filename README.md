@@ -1,6 +1,6 @@
 # WebSurf
 
-<img src="assets/readme.jpg" width="300" alt="好模型">
+<img src="app/src/main/res/drawable-nodpi/ws_logo.png" width="160" alt="WebSurf">
 
 100% vibe coding + REA
 
@@ -10,7 +10,11 @@
 
 使用特殊播放器的网页不可以，油管别想啦
 
-**[下载使用](https://github.com/Pitohui-Dichrous/WebSurf/releases/latest/download/WebSurf-0.5.0.apk)**
+**酸性设计 · 0.6.0-acid.1 视觉预览版**
+
+黑白与荧光绿、硬边色块、粗窄字体。此版本来自 `酸性设计` 分支。
+
+**[下载预览版](https://github.com/Pitohui-Dichrous/WebSurf/releases/download/v0.6.0-acid.1/WebSurf-0.6.0-acid.1.apk)** · [稳定版](https://github.com/Pitohui-Dichrous/WebSurf/releases/tag/v0.5.0)
 
 ## 基本功能
 
@@ -21,4 +25,4 @@
 
 Android 8.0 及以上。默认百度首页，可在设置中修改。
 
-[详细使用与构建](docs/USAGE.md)
+[详细使用与构建](docs/USAGE.md) · [设计说明](docs/ACID_DESIGN.md)

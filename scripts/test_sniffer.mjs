@@ -452,13 +452,13 @@ test('an absolutely positioned video gets its action after the player wrapper in
 test('webpage action uses system colors by default and follows explicit application light and dark themes',()=>{
   const v=new Media({playing:true}),h=harness({media:[v],dark:true});h.ack();h.command(h.id(v),'attach');h.command(h.id(v),'detach',{resume:false});
   const button=h.document.body.querySelectorAll('button')[0];
-  assert.equal(button.getAttribute('data-websurf-theme'),'dark');assert.equal(button.style.getPropertyValue('color'),'#a8d5b8');
+  assert.equal(button.getAttribute('data-websurf-theme'),'dark');assert.equal(button.style.getPropertyValue('color'),'#000000');
   h.window.__websurf.command({action:'theme',dark:false});
-  assert.equal(button.getAttribute('data-websurf-theme'),'light');assert.equal(button.style.getPropertyValue('background'),'#edf0eb');
-  assert.equal(button.style.getPropertyValue('color'),'#145f39');
+  assert.equal(button.getAttribute('data-websurf-theme'),'light');assert.equal(button.style.getPropertyValue('background'),'#000000');
+  assert.equal(button.style.getPropertyValue('color'),'#c0fe03');
   h.colorPreference.matches=true;h.colorPreference.dispatch('change');assert.equal(button.getAttribute('data-websurf-theme'),'light');
-  h.window.__websurf.command({action:'theme',dark:true});assert.equal(button.style.getPropertyValue('background'),'#2c2c2c');
-  assert.equal(button.style.getPropertyValue('color'),'#a8d5b8');
+  h.window.__websurf.command({action:'theme',dark:true});assert.equal(button.style.getPropertyValue('background'),'#c0fe03');
+  assert.equal(button.style.getPropertyValue('color'),'#000000');
 });
 test('application theme broadcasts to present and newly observed frame sessions',()=>{
   const h=harness(),posts=[],child={postMessage:data=>posts.push(data)},frame=new Element('IFRAME');frame.contentWindow=child;h.frames.push(frame);h.ack();

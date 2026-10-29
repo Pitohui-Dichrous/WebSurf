@@ -20,8 +20,10 @@ public final class ResourceRow extends LinearLayout {
   private final ResourcePreviewLoader loader;
   private final Map<String, String> headers;
   private final ImageView image;
-  private final TextView placeholder, imageSource, quality, variants, details;
+  private final TextView placeholder, imageSource, quality, dimensions, variants, details;
   private final FrameLayout picture;
+  private final Typeface qualityTypeface;
+  private final float qualitySize;
   private boolean requested;
   private final ViewTreeObserver.OnPreDrawListener visibility = this::loadWhenVisible;
 
@@ -35,26 +37,28 @@ public final class ResourceRow extends LinearLayout {
     this.resource = resource;
     this.loader = loader;
     this.headers = new LinkedHashMap<>(headers);
-    setOrientation(HORIZONTAL);
+    setOrientation(VERTICAL);
     setGravity(Gravity.TOP);
-    setPadding(dp(12), dp(12), dp(12), dp(12));
-    setMinimumHeight(dp(108));
-    Ui.ripple(this, Ui.SURFACE, 6);
+    setPadding(dp(12), dp(14), dp(12), 0);
+    Ui.ripple(this, Ui.SURFACE, 0);
     setOnClickListener(view -> click.run());
+
+    LinearLayout media = new LinearLayout(context);
+    media.setGravity(Gravity.TOP);
+    addView(media, new LayoutParams(-1, -2));
     LinearLayout preview = new LinearLayout(context);
     preview.setOrientation(VERTICAL);
-    int previewWidth =
+    boolean compact =
         getResources().getConfiguration().screenWidthDp < 360
-                || getResources().getConfiguration().fontScale > 1.3f
-            ? 80
-            : 96;
+            || getResources().getConfiguration().fontScale > 1.3f;
+    int previewWidth = compact ? 100 : 120;
     LayoutParams previewParams = new LayoutParams(dp(previewWidth), -2);
-    previewParams.rightMargin = dp(12);
-    addView(preview, previewParams);
+    previewParams.rightMargin = dp(14);
+    media.addView(preview, previewParams);
     picture = new FrameLayout(context);
-    picture.setBackground(Ui.shape(context, Ui.BG, 6));
+    picture.setBackground(Ui.outline(context, Ui.BG, Ui.BORDER, 0));
     picture.setClipToOutline(true);
-    preview.addView(picture, new LayoutParams(-1, dp(64)));
+    preview.addView(picture, new LayoutParams(-1, dp(compact ? 75 : 84)));
     image = new ImageView(context);
     image.setScaleType(ImageView.ScaleType.FIT_CENTER);
     image.setContentDescription(resource.label() + "的缩略图");
@@ -62,36 +66,47 @@ public final class ResourceRow extends LinearLayout {
     placeholder = Ui.text(context, resource.isVideo() ? "预览" : resource.kind, 12, Ui.MUTED);
     placeholder.setGravity(Gravity.CENTER);
     picture.addView(placeholder, new FrameLayout.LayoutParams(-1, -1));
-    imageSource = Ui.text(context, "", 12, Ui.MUTED);
-    imageSource.setGravity(Gravity.CENTER);
-    imageSource.setMinHeight(dp(20));
+    imageSource = Ui.text(context, "", 11, Ui.MUTED);
+    imageSource.setGravity(Gravity.LEFT | Gravity.CENTER_VERTICAL);
+    imageSource.setMinHeight(dp(22));
     imageSource.setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);
     preview.addView(imageSource, new LayoutParams(-1, -2));
-    LinearLayout text = new LinearLayout(context);
-    text.setOrientation(VERTICAL);
-    addView(text, new LayoutParams(0, -2, 1));
-    TextView title = Ui.text(context, resource.label(), 14, Ui.TEXT);
-    title.setMaxLines(getResources().getConfiguration().fontScale > 1.3f ? 2 : 1);
-    title.setEllipsize(TextUtils.TruncateAt.END);
-    text.addView(title, new LayoutParams(-1, -2));
-    quality = Ui.text(context, "", 14, Ui.CONTROL);
-    quality.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-    quality.setPadding(0, dp(4), 0, dp(2));
+
+    LinearLayout facts = new LinearLayout(context);
+    facts.setOrientation(VERTICAL);
+    media.addView(facts, new LayoutParams(0, -2, 1));
+    quality = Ui.display(context, "", compact ? 29 : 34, Ui.CONTROL);
+    qualityTypeface = quality.getTypeface();
+    qualitySize = quality.getTextSize();
     quality.setMaxLines(2);
-    text.addView(quality, new LayoutParams(-1, -2));
-    variants = Ui.text(context, "", 12, Ui.MUTED);
+    facts.addView(quality, new LayoutParams(-1, -2));
+    dimensions = Ui.mono(context, "", 11, Ui.MUTED);
+    dimensions.setMaxLines(2);
+    dimensions.setPadding(0, dp(3), 0, dp(5));
+    facts.addView(dimensions, new LayoutParams(-1, -2));
+    details = Ui.text(context, "", 12, Ui.TEXT);
+    details.setMaxLines(2);
+    details.setPadding(0, dp(3), 0, dp(3));
+    facts.addView(details, new LayoutParams(-1, -2));
+
+    TextView title = Ui.text(context, resource.label(), 15, Ui.TEXT);
+    title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+    title.setMaxLines(2);
+    title.setEllipsize(TextUtils.TruncateAt.END);
+    title.setContentDescription(resource.label());
+    title.setTooltipText(resource.label());
+    title.setPadding(0, dp(7), 0, dp(5));
+    addView(title, new LayoutParams(-1, -2));
+    variants = Ui.text(context, "", 11, Ui.MUTED);
     variants.setMaxLines(2);
     variants.setEllipsize(TextUtils.TruncateAt.END);
-    text.addView(variants, new LayoutParams(-1, -2));
-    details = Ui.text(context, "", 12, Ui.MUTED);
-    details.setMaxLines(1);
-    details.setEllipsize(TextUtils.TruncateAt.END);
-    details.setPadding(0, dp(2), 0, dp(4));
-    text.addView(details, new LayoutParams(-1, -2));
-    TextView url = Ui.text(context, resource.url, 11, Ui.MUTED);
+    addView(variants, new LayoutParams(-1, -2));
+    TextView url = Ui.mono(context, resource.url, 10, Ui.MUTED);
     url.setSingleLine(true);
     url.setEllipsize(TextUtils.TruncateAt.MIDDLE);
-    text.addView(url, new LayoutParams(-1, -2));
+    url.setPadding(0, dp(5), 0, dp(12));
+    addView(url, new LayoutParams(-1, -2));
+    addView(Ui.rule(context, Ui.BORDER), new LayoutParams(-1, dp(1)));
     updateText();
   }
 
@@ -100,10 +115,39 @@ public final class ResourceRow extends LinearLayout {
   }
 
   private void updateText() {
-    quality.setText(resource.qualityLabel());
-    quality.setVisibility(resource.isVideo() ? VISIBLE : GONE);
-    variants.setText(
-        resource.availableQualities.isEmpty() ? "" : "可选 " + resource.availableQualities);
+    boolean known = resource.isVideo() && resource.width > 0 && resource.height > 0;
+    if (known) {
+      quality.setTypeface(qualityTypeface);
+      quality.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, qualitySize);
+      quality.setText(Math.min(resource.width, resource.height) + "p");
+      int maximum = Math.min(resource.maxVariantWidth, resource.maxVariantHeight);
+      dimensions.setText(
+          resource.width
+              + " × "
+              + resource.height
+              + (maximum > Math.min(resource.width, resource.height)
+                  ? "\n最高 " + maximum + "p"
+                  : ""));
+    } else {
+      quality.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+      quality.setTextSize(15);
+      if (resource.isVideo()) {
+        int maximum = Math.min(resource.maxVariantWidth, resource.maxVariantHeight);
+        quality.setText(maximum > 0 ? "自适应" : "清晰度待识别");
+        dimensions.setText(
+            maximum > 0
+                ? "最高 " + maximum + "p"
+                : resource.width > 0
+                    ? "宽 " + resource.width + " px"
+                    : resource.height > 0 ? "高 " + resource.height + " px" : "");
+      } else {
+        quality.setText(resource.kind);
+        dimensions.setText("");
+      }
+    }
+    dimensions.setVisibility(dimensions.getText().length() > 0 ? VISIBLE : GONE);
+    quality.setContentDescription(resource.qualityLabel());
+    variants.setText(resource.availableQualities.isEmpty() ? "" : resource.availableQualities);
     variants.setVisibility(resource.availableQualities.isEmpty() ? GONE : VISIBLE);
     String duration =
         resource.durationMs > 0
@@ -154,7 +198,7 @@ public final class ResourceRow extends LinearLayout {
             row.imageSource.setText("重试预览");
             row.picture.setContentDescription("重试预览");
             row.picture.setOnClickListener(view -> row.request(true));
-            Ui.ripple(row.picture, Ui.BG, 6);
+            Ui.ripple(row.picture, Ui.BG, 0);
           }
         };
     if (retry) loader.retry(resource, headers, callback);

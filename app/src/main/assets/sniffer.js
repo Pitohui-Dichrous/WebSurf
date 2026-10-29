@@ -264,8 +264,8 @@
     const dark=explicitDark===null?!!(colorPreference&&colorPreference.matches):explicitDark;
     if(state.buttonTheme===dark)return;
     state.buttonTheme=dark;
-    setStyle(state.button,{background:dark?'#2c2c2c':'#edf0eb',color:dark?'#a8d5b8':'#145f39',
-      'border-color':dark?'#4a514b':'#dce1da','color-scheme':dark?'dark':'light'});
+    setStyle(state.button,{background:dark?'#c0fe03':'#000000',color:dark?'#000000':'#c0fe03',
+      'border-color':dark?'#c0fe03':'#000000','color-scheme':dark?'dark':'light'});
     state.button.setAttribute('data-websurf-theme',dark?'dark':'light');
   }
   function updateButton(state) {
@@ -293,7 +293,7 @@
     const rail=document.createElement('div');rail.setAttribute('data-websurf-ui','takeover-rail');
     rail.style.cssText='all:initial!important;box-sizing:border-box!important;display:flex!important;position:relative!important;clear:both!important;width:100%!important;min-width:0!important;max-width:100%!important;height:48px!important;min-height:48px!important;flex-shrink:0!important;grid-column:1 / -1!important;align-items:center!important;justify-content:flex-end!important;padding:2px 0!important;';
     const button=document.createElement('button');button.type='button';button.textContent='接管播放';button.setAttribute('aria-label','使用 WebSurf 播放此视频');button.setAttribute('data-websurf-control','');
-    button.style.cssText='all:initial!important;box-sizing:border-box!important;display:flex!important;position:relative!important;align-items:center!important;justify-content:center!important;min-width:98px!important;height:44px!important;min-height:44px!important;padding:0 14px!important;border:1px solid!important;border-radius:8px!important;font:500 14px system-ui,sans-serif!important;cursor:pointer!important;touch-action:manipulation!important;';
+    button.style.cssText='all:initial!important;box-sizing:border-box!important;display:flex!important;position:relative!important;align-items:center!important;justify-content:center!important;min-width:98px!important;height:44px!important;min-height:44px!important;padding:0 14px!important;border:1px solid!important;border-radius:0!important;font:700 14px system-ui,sans-serif!important;letter-spacing:.04em!important;cursor:pointer!important;touch-action:manipulation!important;';
     button.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();if(e.isTrusted!==true||!state.element.isConnected)return;
       inspect(state.element);report(state,'takeover',{userInitiated:true});});
     rail.appendChild(button);state.button=button;state.buttonRail=rail;updateButton(state);

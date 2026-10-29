@@ -12,4 +12,5 @@ __pycache__/
 *.log
 /docs/*
 !/docs/USAGE.md
+!/docs/ACID_DESIGN.md
 !/docs/release-verification.json

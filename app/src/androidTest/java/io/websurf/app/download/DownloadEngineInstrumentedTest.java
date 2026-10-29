@@ -120,6 +120,88 @@ public class DownloadEngineInstrumentedTest {
   }
 
   @Test
+  public void remoteControlEndpointPublishesPageTitleAndOriginalVideoBytes() throws Exception {
+    byte[] video;
+    try (InputStream input =
+        InstrumentationRegistry.getInstrumentation()
+            .getContext()
+            .getAssets()
+            .open("fixtures/media/sample-360.mp4")) {
+      video = read(input);
+    }
+    server.files.put("/Remote_control.php", video);
+    server.contentTypes.put("/Remote_control.php", "video/mp4");
+    server.dispositions.put("/Remote_control.php", "attachment; filename=Remote_control.mp4");
+    DownloadStore.Job job = job("/Remote_control.php");
+    job.title = "海岸航拍-" + job.id;
+    runNamed(job);
+    assertPublishedName(job, job.title + ".mp4");
+    try (InputStream input =
+        context.getContentResolver().openInputStream(Uri.parse(job.outputUri))) {
+      assertArrayEquals(video, read(input));
+    }
+  }
+
+  @Test
+  public void meaningfulResponseFilenameWinsOverEndpointAndPageTitle() throws Exception {
+    try (InputStream input =
+        InstrumentationRegistry.getInstrumentation()
+            .getContext()
+            .getAssets()
+            .open("fixtures/media/sample-360.mp4")) {
+      server.files.put("/remote_control.php", read(input));
+    }
+    server.contentTypes.put("/remote_control.php", "video/mp4");
+    DownloadStore.Job job = job("/remote_control.php");
+    job.title = "网页标题-" + job.id;
+    String expected = "原始+文件-" + job.id + ".mp4";
+    server.dispositions.put(
+        "/remote_control.php",
+        "attachment; filename=fallback.mp4; filename*=UTF-8''"
+            + "%E5%8E%9F%E5%A7%8B%2B%E6%96%87%E4%BB%B6-"
+            + job.id
+            + ".mp4");
+    runNamed(job);
+    assertPublishedName(job, expected);
+  }
+
+  @Test
+  public void hlsNamesMp4FromEntryResponseNeverFromMediaSegment() throws Exception {
+    server.files.put("/remote_control.php", server.files.get("/vod.m3u8"));
+    server.contentTypes.put("/remote_control.php", "application/vnd.apple.mpegurl");
+    DownloadStore.Job job = job("/remote_control.php");
+    String base = "entry-playlist-" + job.id;
+    server.dispositions.put("/remote_control.php", "attachment; filename=" + base + ".m3u8");
+    server.dispositions.put("/segment00.ts", "attachment; filename=wrong-segment-name.mp4");
+    runNamed(job);
+    assertPublishedName(job, base + ".mp4");
+    assertMp4(job, true);
+  }
+
+  private void runNamed(DownloadStore.Job job) throws Exception {
+    new DownloadEngine(context, job, current -> {}).run();
+    outputs.add(Uri.parse(job.outputUri));
+    assertEquals("completed", job.state);
+  }
+
+  private void assertPublishedName(DownloadStore.Job job, String expected) {
+    assertEquals(expected, job.fileName);
+    try (android.database.Cursor row =
+        context
+            .getContentResolver()
+            .query(
+                Uri.parse(job.outputUri),
+                new String[] {android.provider.OpenableColumns.DISPLAY_NAME},
+                null,
+                null,
+                null)) {
+      assertNotNull(row);
+      assertTrue(row.moveToFirst());
+      assertEquals(expected, row.getString(0));
+    }
+  }
+
+  @Test
   public void cancellationDoesNotPublishOutput() throws Exception {
     DownloadStore.Job job = job("/slow");
     DownloadEngine[] holder = new DownloadEngine[1];
@@ -177,9 +259,34 @@ public class DownloadEngineInstrumentedTest {
       storedIds.add(id);
       DownloadStore.Job failed = waitFor(id, "failed");
       assertTrue(failed.error.contains("503"));
-      DownloadService.retry(context, id);
+      java.util.concurrent.CountDownLatch accepted = new java.util.concurrent.CountDownLatch(1);
+      android.content.BroadcastReceiver receiver =
+          new android.content.BroadcastReceiver() {
+            @Override
+            public void onReceive(Context receivedContext, android.content.Intent intent) {
+              if (id.equals(intent.getStringExtra(DownloadService.EXTRA_ID))
+                  && "queued".equals(intent.getStringExtra(DownloadService.EXTRA_STATE)))
+                accepted.countDown();
+            }
+          };
+      androidx.core.content.ContextCompat.registerReceiver(
+          context,
+          receiver,
+          new android.content.IntentFilter(DownloadService.ACTION_CHANGED),
+          androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED);
+      try {
+        // Retry is accepted on the service main thread, after any previous run's cleanup.
+        // Do not interpret the old HTTP 503 record as a failure of the new attempt.
+        DownloadService.retry(context, id);
+        assertTrue(
+            "Retry did not acknowledge a queued task",
+            accepted.await(5, java.util.concurrent.TimeUnit.SECONDS));
+      } finally {
+        context.unregisterReceiver(receiver);
+      }
       DownloadStore.Job completed = waitFor(id, "completed");
       outputs.add(Uri.parse(completed.outputUri));
+      assertEquals("Retry must make exactly one additional request", 2, server.retryRequests.get());
       assertEquals(1L, DownloadStore.list(context).stream().filter(j -> id.equals(j.id)).count());
     }
   }
@@ -469,6 +576,8 @@ public class DownloadEngineInstrumentedTest {
     final ServerSocket socket = new ServerSocket(0);
     final ExecutorService threads = Executors.newCachedThreadPool();
     final Map<String, byte[]> files = new HashMap<>();
+    final Map<String, String> contentTypes = new java.util.concurrent.ConcurrentHashMap<>();
+    final Map<String, String> dispositions = new java.util.concurrent.ConcurrentHashMap<>();
     final List<String> requests = java.util.Collections.synchronizedList(new ArrayList<>());
     final AtomicInteger rejected = new AtomicInteger();
     final AtomicInteger retryRequests = new AtomicInteger();
@@ -752,7 +861,10 @@ public class DownloadEngineInstrumentedTest {
             path.endsWith(".m3u8")
                 ? "application/vnd.apple.mpegurl"
                 : path.equals("/document") ? "application/pdf" : "application/octet-stream";
+        type = contentTypes.getOrDefault(path, type);
         response += "Content-Type: " + type + "\r\nContent-Length: " + body.length + "\r\n";
+        if (dispositions.containsKey(path))
+          response += "Content-Disposition: " + dispositions.get(path) + "\r\n";
         if (path.equals("/document"))
           response +=
               "Content-Disposition: attachment; filename=doc.pdf;"
