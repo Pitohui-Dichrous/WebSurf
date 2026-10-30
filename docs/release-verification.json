@@ -1,29 +1,37 @@
 {
-  "version": "0.6.1-acid.5",
-  "version_code": 10,
-  "date": "2026-10-30",
-  "channel": "prerelease",
-  "branch": "酸性设计",
-  "change_scope": "One-press Android Back from webpage video takeover; persistent selectable search engines",
-  "java_tests": 42,
-  "android_unique_tests": 20,
-  "back_validation": "Real Android Back navigates to previous page and releases native takeover in inline, fullscreen including locked controls, and floating modes; same WebView/history retained",
-  "search_choices": [
-    "谷歌",
-    "夸克",
-    "必应国内版",
-    "必应国际版",
-    "百度"
-  ],
-  "default_search": "必应国内版",
-  "search_validation": "Real settings selection and address editor submission verified for all5providers, query encoding/regional flags, explicit URLs unchanged, and selection persisted through activity recreation",
-  "layout_validation": "411dp normal font and320dp at1.3 font scale; new menu placement and scrolling, default selection, long titles and errors; existing light/dark settings checks passed",
-  "browser_regression": "Existing multi-video scenario passed after the test scrolled its HTML button below the pinned native player before real touch injection; production hit-testing/geometry unchanged",
-  "lint_errors": 0,
-  "lint_warnings": 51,
-  "release_signature": "Verified; same certificate as0.6.1-acid.4",
-  "upgrade_install": "Passed from0.6.1-acid.4 to0.6.1-acid.5; signed release cold launch passed",
-  "baseline_release": "0.6.1-acid.4",
-  "scope": "Grouped/focused Android14/API34 emulator runs with controlled local media. Provider navigation requests were intercepted with local HTML for deterministic tests; this does not establish live provider results or regional availability. Download engine and web-sniffer implementations are unchanged; their full suites were not rerun.",
-  "apk_sha256": "c43126e9e5d5252a818cc360059839178184cddd67f394763c469607b44855fe"
+  "version": "1.0.0-main",
+  "version_code": 11,
+  "date": "2026-10-31",
+  "channel": "stable",
+  "branch": "main",
+  "change_scope": "Promote the complete acid design branch to main as the 1.0.0 stable release; application source unchanged from 0.6.1-acid.5",
+  "rerun_this_release": {
+    "java_tests": 42,
+    "javascript_tests": 61,
+    "version_workflow_tests": 7,
+    "android_tests": 7,
+    "android_suites": [
+      "BrowserNavigationSettingsTest (2)",
+      "AcidDesignTest (4)",
+      "DownloadSettingsProgressTest (1)"
+    ],
+    "lint_errors": 0,
+    "lint_warnings": 51,
+    "device": "Android 14 / API 34 emulator; normal 411dp display",
+    "validation": "One-press Back in all native player modes, all five search selections and persistence, new version label, light/dark panels, homepage keyboard editing, tab counter taps, active download progress and retained concurrency, next-task concurrency and file hashes"
+  },
+  "inherited_baseline": {
+    "release": "0.6.1-acid.5",
+    "android_unique_tests": 20,
+    "scope": "Previous 320dp/1.3-font layout, multi-video and video-control verification remains inherited; those full suites were not rerun for this metadata-only promotion. Full download-engine and native-preview suites also retain their earlier branch verification."
+  },
+  "release_signature": "Verified; same certificate as previous stable and acid preview releases",
+  "certificate_sha256": "b4d6077e325aa73bb0af70ea5b05b338268e79f209f0207402501d8f4f2a1f9c",
+  "zip_alignment": "Passed 4-byte alignment check",
+  "upgrade_install": "Passed from 0.6.1-acid.5/code10 to 1.0.0-main/code11",
+  "signed_release_manual_launch": "Not performed: automatic approval review blocked the manual emulator launch command without a detailed reason. Debug runtime regression passed; release signing, version and upgrade checks passed.",
+  "original_icon": "User supplied WS.png is byte-identical in source and release APK",
+  "source_privacy": "Reviewed tracked source only; excludes private tools, diagnostics, signing keys, original APK inputs and decompiled code",
+  "scope": "Controlled local HTTP/media fixtures on API34. Search navigation is intercepted by local test responses; no claim of live provider results or universal site compatibility. API26 remains compile/lint checked. Pause and persistent download resume remain unavailable.",
+  "apk_sha256": "c1a472ad5d0b712fc7629a8b86e292c70004b9e2fe92af3f1e852ab32fbe8910"
 }
