@@ -86,6 +86,9 @@ class VersionWorkflowTest(unittest.TestCase):
         readme = (self.root / "README.md").read_text(encoding="utf-8")
         self.assertIn("下载 APK", readme)
         self.assertNotIn("视觉预览版", readme)
+        self.assertIn("**WebSurf · 0.7.0**", readme)
+        self.assertNotIn("此版本来自 `main` 分支", readme)
+        self.assertIn("版本：**0.7.0**，正式版。", (self.root / "docs/USAGE.md").read_text(encoding="utf-8"))
         with self.assertRaisesRegex(ValueError, "already has an unreleased"):
             prepare(self.root, version="0.8.0")
         self.assertEqual(load_version(self.root), info)

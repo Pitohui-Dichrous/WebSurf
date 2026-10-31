@@ -8,6 +8,7 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
+import android.graphics.Color;
 import android.graphics.drawable.Animatable;
 import android.graphics.drawable.Drawable;
 import android.net.Uri;
@@ -215,49 +216,145 @@ public final class ResourceArtworkTest {
   @Test
   public void failedPreviewOffersRetryAndRealImageStopsLoadingArtwork() throws Exception {
     AtomicInteger rowActions = new AtomicInteger();
-    ResourceRow row =
+    for (boolean dark : new boolean[] {false, true}) {
+      server.resetPreview();
+      String theme = dark ? "dark" : "light";
+      ResourceRow row =
+          ui(
+              a -> {
+                Ui.setDark(a, dark);
+                a.applyChromeTheme();
+                LinearLayout body = a.scrollBody(a.sheet("网页资源"));
+                WebResource image = new WebResource(server.base() + "/preview.png?theme=" + theme);
+                image.title = "异步预览";
+                ResourceRow result =
+                    new ResourceRow(
+                        a, image, a.previewLoader, Map.of(), rowActions::incrementAndGet);
+                body.addView(result);
+                return result;
+              });
+      assertTrue("Preview was not requested", server.requested.await(5, TimeUnit.SECONDS));
+      ResourceArtworkView art = ui(a -> artwork(row));
+      assertNotNull(art);
+      assertEquals(ResourceArtworkView.Kind.LOADING, ui(a -> art.getKind()));
+      if (ValueAnimator.areAnimatorsEnabled()) {
+        await("Real pending request did not animate", () -> ui(a -> art.isAnimating()));
+        assertFramesChange(art);
+      }
+      ui(
+          a -> {
+            assertPreviewBorder(row, null);
+            return null;
+          });
+      shot("request-loading-" + theme);
+      server.release.countDown();
+      await(
+          "Failed preview did not show unknown artwork",
+          () ->
+              ui(
+                  a ->
+                      art.getKind() == ResourceArtworkView.Kind.UNKNOWN
+                          && containsText(row, "重试")));
+      assertFalse(ui(a -> art.isAnimating()));
+      assertTrue(ui(a -> containsText(row, "暂无预览")));
+      ui(
+          a -> {
+            assertPreviewBorder(row, null);
+            return null;
+          });
+      shot("request-failed-" + theme);
+      ui(
+          a -> {
+            View retry = clickableAncestor(art, row);
+            assertNotNull("Preview artwork must retain a retry action", retry);
+            assertTrue(retry.performClick());
+            return null;
+          });
+      await(
+          "Retry did not replace loading artwork with the real image",
+          () -> ui(a -> art.getVisibility() == View.GONE && hasRealImage(row)));
+      assertFalse(ui(a -> art.isAnimating()));
+      assertEquals(2, server.previewRequests.get());
+      assertEquals(
+          "Retrying the preview must not invoke the row download action", 0, rowActions.get());
+      ui(
+          a -> {
+            assertPreviewBorder(row, 0xffc0fe03);
+            return null;
+          });
+      shot("request-complete-" + theme);
+    }
+  }
+
+  @Test
+  public void opaqueWideSquareAndPortraitPreviewsKeepAllBordersInBothThemes() throws Exception {
+    String[] names = {"wide", "square", "portrait"};
+    int[] colors = {Color.RED, Color.GREEN, Color.BLUE};
+    for (boolean dark : new boolean[] {false, true})
+      for (int index = 0; index < names.length; index++) {
+        final String name = names[index], theme = dark ? "dark" : "light";
+        final int color = colors[index];
+        ResourceRow row =
+            ui(
+                a -> {
+                  Ui.setDark(a, dark);
+                  a.applyChromeTheme();
+                  LinearLayout body = a.scrollBody(a.sheet("网页资源"));
+                  WebResource image =
+                      new WebResource(server.base() + "/" + name + ".png?theme=" + theme);
+                  image.title = name + " 不透明缩略图";
+                  ResourceRow result =
+                      new ResourceRow(a, image, a.previewLoader, Map.of(), () -> {});
+                  body.addView(result);
+                  return result;
+                });
+        await(
+            "Opaque " + name + " thumbnail did not load",
+            () -> ui(a -> artwork(row).getVisibility() == View.GONE && hasRealImage(row)));
         ui(
             a -> {
-              LinearLayout body = a.scrollBody(a.sheet("网页资源"));
-              WebResource image = new WebResource(server.base() + "/preview.png");
-              image.title = "异步预览";
-              ResourceRow result =
-                  new ResourceRow(a, image, a.previewLoader, Map.of(), rowActions::incrementAndGet);
-              body.addView(result);
-              return result;
+              assertPreviewBorder(row, color);
+              return null;
             });
-    assertTrue("Preview was not requested", server.requested.await(5, TimeUnit.SECONDS));
-    ResourceArtworkView art = ui(a -> artwork(row));
-    assertNotNull(art);
-    assertEquals(ResourceArtworkView.Kind.LOADING, ui(a -> art.getKind()));
-    if (ValueAnimator.areAnimatorsEnabled()) {
-      await("Real pending request did not animate", () -> ui(a -> art.isAnimating()));
-      assertFramesChange(art);
+        shot("border-" + name + "-" + theme);
+      }
+  }
+
+  private static void assertPreviewBorder(ResourceRow row, Integer centerColor) {
+    View picture = (View) artwork(row).getParent();
+    Bitmap bitmap = render(picture);
+    try {
+      int inset = Math.max(0, Ui.dp(row.getContext(), 1) / 2);
+      int right = bitmap.getWidth() - 1 - inset, bottom = bitmap.getHeight() - 1 - inset;
+      for (int fraction = 1; fraction <= 3; fraction++) {
+        int x = bitmap.getWidth() * fraction / 4, y = bitmap.getHeight() * fraction / 4;
+        assertPixel("left preview border", Ui.BORDER, bitmap.getPixel(inset, y), 2);
+        assertPixel("right preview border", Ui.BORDER, bitmap.getPixel(right, y), 2);
+        assertPixel("top preview border", Ui.BORDER, bitmap.getPixel(x, inset), 2);
+        assertPixel("bottom preview border", Ui.BORDER, bitmap.getPixel(x, bottom), 2);
+      }
+      if (centerColor != null)
+        assertPixel(
+            "Real thumbnail center remains visible",
+            centerColor,
+            bitmap.getPixel(bitmap.getWidth() / 2, bitmap.getHeight() / 2),
+            12);
+    } finally {
+      bitmap.recycle();
     }
-    shot("request-loading");
-    server.release.countDown();
-    await(
-        "Failed preview did not show unknown artwork",
-        () ->
-            ui(a -> art.getKind() == ResourceArtworkView.Kind.UNKNOWN && containsText(row, "重试")));
-    assertFalse(ui(a -> art.isAnimating()));
-    assertTrue(ui(a -> containsText(row, "暂无预览")));
-    shot("request-failed");
-    ui(
-        a -> {
-          View retry = clickableAncestor(art, row);
-          assertNotNull("Preview artwork must retain a retry action", retry);
-          assertTrue(retry.performClick());
-          return null;
-        });
-    await(
-        "Retry did not replace loading artwork with the real image",
-        () -> ui(a -> art.getVisibility() == View.GONE && hasRealImage(row)));
-    assertFalse(ui(a -> art.isAnimating()));
-    assertEquals(2, server.previewRequests.get());
-    assertEquals(
-        "Retrying the preview must not invoke the row download action", 0, rowActions.get());
-    shot("request-complete");
+  }
+
+  private static void assertPixel(String message, int expected, int actual, int tolerance) {
+    assertTrue(
+        message
+            + ": expected "
+            + Integer.toHexString(expected)
+            + " but was "
+            + Integer.toHexString(actual),
+        Math.abs(Color.red(expected) - Color.red(actual)) <= tolerance
+            && Math.abs(Color.green(expected) - Color.green(actual)) <= tolerance
+            && Math.abs(Color.blue(expected) - Color.blue(actual)) <= tolerance
+            && Color.alpha(actual) == 255);
   }
 
   private void assertFramesChange(ResourceArtworkView art) throws Exception {
@@ -354,20 +451,16 @@ public final class ResourceArtworkTest {
   private static final class Fixture implements AutoCloseable {
     final ServerSocket socket = new ServerSocket(0);
     final ExecutorService pool = Executors.newCachedThreadPool();
-    final CountDownLatch requested = new CountDownLatch(1), release = new CountDownLatch(1);
+    volatile CountDownLatch requested = new CountDownLatch(1), release = new CountDownLatch(1);
     final AtomicInteger mediaRequests = new AtomicInteger(), previewRequests = new AtomicInteger();
-    final byte[] png;
+    final byte[] png, wide, square, portrait;
     volatile boolean closed;
 
     Fixture() throws IOException {
-      Bitmap bitmap = Bitmap.createBitmap(32, 18, Bitmap.Config.ARGB_8888);
-      bitmap.eraseColor(0xffc0fe03);
-      try (ByteArrayOutputStream output = new ByteArrayOutputStream()) {
-        bitmap.compress(Bitmap.CompressFormat.PNG, 100, output);
-        png = output.toByteArray();
-      } finally {
-        bitmap.recycle();
-      }
+      png = png(32, 18, 0xffc0fe03);
+      wide = png(320, 180, Color.RED);
+      square = png(180, 180, Color.GREEN);
+      portrait = png(90, 180, Color.BLUE);
       pool.execute(
           () -> {
             while (!closed) {
@@ -385,6 +478,23 @@ public final class ResourceArtworkTest {
       return "http://127.0.0.1:" + socket.getLocalPort();
     }
 
+    void resetPreview() {
+      requested = new CountDownLatch(1);
+      release = new CountDownLatch(1);
+      previewRequests.set(0);
+    }
+
+    private static byte[] png(int width, int height, int color) throws IOException {
+      Bitmap bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+      bitmap.eraseColor(color);
+      try (ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+        bitmap.compress(Bitmap.CompressFormat.PNG, 100, output);
+        return output.toByteArray();
+      } finally {
+        bitmap.recycle();
+      }
+    }
+
     void serve(Socket client) {
       try (Socket connection = client) {
         connection.setSoTimeout(5000);
@@ -393,7 +503,7 @@ public final class ResourceArtworkTest {
                 new InputStreamReader(connection.getInputStream(), StandardCharsets.US_ASCII));
         String first = reader.readLine();
         if (first == null) return;
-        String path = first.split(" ")[1];
+        String path = first.split(" ")[1].split("\\?", 2)[0];
         while (true) {
           String line = reader.readLine();
           if (line == null || line.isEmpty()) break;
@@ -412,6 +522,11 @@ public final class ResourceArtworkTest {
             body = png;
             mime = "image/png";
           }
+        } else if (path.equals("/wide.png")
+            || path.equals("/square.png")
+            || path.equals("/portrait.png")) {
+          body = path.equals("/wide.png") ? wide : path.equals("/square.png") ? square : portrait;
+          mime = "image/png";
         } else if (path.equals("/recording.m4a") || path.equals("/document.pdf")) {
           mediaRequests.incrementAndGet();
           status = "404 Not Found";

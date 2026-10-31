@@ -11,11 +11,11 @@
 使用特殊播放器的网页不可以，油管别想啦
 
 <!-- release-version:start -->
-**WebSurf · 1.0.0-main**
+**WebSurf · 1.0.1**
 
-黑白与荧光绿、硬边色块、粗窄字体。此版本来自 `main` 分支。
+黑白与荧光绿、硬边色块、粗窄字体。
 
-**[下载 APK](https://github.com/Pitohui-Dichrous/WebSurf/releases/download/v1.0.0-main/WebSurf-1.0.0-main.apk)**
+**[下载 APK](https://github.com/Pitohui-Dichrous/WebSurf/releases/download/v1.0.1-main/WebSurf-1.0.1-main.apk)**
 <!-- release-version:end -->
 
 ## 基本功能

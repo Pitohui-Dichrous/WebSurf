@@ -101,13 +101,14 @@ def update_docs(root, info, release_tags):
     name, branch, channel = info["name"], info["branch"], info["channel"]
     main = channel == "main"
     label = "WebSurf" if main else "酸性设计" if channel == "acid" else channel
-    title = f"**{label} · {name}" + ("**" if main else " 视觉预览版**")
+    public_name = info["base"] if main else name
+    title = f"**{label} · {public_name}" + ("**" if main else " 视觉预览版**")
     download = "下载 APK" if main else "下载预览版"
     link = f"**[{download}]({REPO}/releases/download/v{name}/WebSurf-{name}.apk)**"
     if not main and stable:
         link += f" · [稳定版]({REPO}/releases/tag/{stable})"
     block = (RELEASE_START + "\n" + title + "\n\n"
-             + f"黑白与荧光绿、硬边色块、粗窄字体。此版本来自 `{branch}` 分支。\n\n"
+             + "黑白与荧光绿、硬边色块、粗窄字体。" + ("" if main else f"此版本来自 `{branch}` 分支。") + "\n\n"
              + link + "\n" + RELEASE_END)
     readme_path, usage_path = Path(root) / "README.md", Path(root) / "docs/USAGE.md"
     readme = readme_path.read_text(encoding="utf-8")
@@ -119,7 +120,7 @@ def update_docs(root, info, release_tags):
     if changed != 1:
         raise ValueError("README release block is missing or duplicated; no files changed")
     usage = usage_path.read_text(encoding="utf-8")
-    heading = f"版本：**{name}**，`{branch}` 分支的" + ("正式版。" if main else "公开预览版。")
+    heading = f"版本：**{public_name}**，" + ("正式版。" if main else f"`{branch}` 分支的公开预览版。")
     if not main and stable:
         heading += f"稳定版仍为 {stable[1:]}。"
     usage, changed = re.subn(r"^版本：[^\n]*$", lambda _: heading, usage, flags=re.M)

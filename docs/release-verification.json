@@ -1,37 +1,34 @@
 {
-  "version": "1.0.0-main",
-  "version_code": 11,
-  "date": "2026-10-31",
+  "version": "1.0.1-main",
+  "public_version": "1.0.1",
+  "version_code": 12,
+  "date": "2026-11-01",
   "channel": "stable",
   "branch": "main",
-  "change_scope": "Promote the complete acid design branch to main as the 1.0.0 stable release; application source unchanged from 0.6.1-acid.5",
+  "change_scope": "Keep the resource thumbnail border visible above opaque previews and loading artwork, including failed-preview retry feedback. Public stable release headings omit the branch suffix.",
+  "reproduction": "New pixel regression fails against the previous 1.0.0 debug APK: thumbnail red pixels replaced the expected left border. The same case passes against this build.",
   "rerun_this_release": {
     "java_tests": 42,
-    "javascript_tests": 61,
     "version_workflow_tests": 7,
-    "android_tests": 7,
-    "android_suites": [
-      "BrowserNavigationSettingsTest (2)",
-      "AcidDesignTest (4)",
-      "DownloadSettingsProgressTest (1)"
-    ],
+    "android_unique_tests": 17,
+    "android_executions": 21,
+    "normal_display_tests": 15,
+    "compact_display_tests": 6,
     "lint_errors": 0,
     "lint_warnings": 51,
-    "device": "Android 14 / API 34 emulator; normal 411dp display",
-    "validation": "One-press Back in all native player modes, all five search selections and persistence, new version label, light/dark panels, homepage keyboard editing, tab counter taps, active download progress and retained concurrency, next-task concurrency and file hashes"
+    "device": "Android 14 / API 34 emulator",
+    "layout_validation": "411dp at normal font and 320dp at 1.3 font scale; light/dark themes; actual HTTP wide/square/portrait opaque images; loading/failure/retry completion; pixel samples along all four edges and center content; resource category spacing and long errors",
+    "preview_regression": "All nine existing preview extraction tests passed; artwork animation visibility, stopped animation after completion and retry/row actions also passed"
   },
   "inherited_baseline": {
-    "release": "0.6.1-acid.5",
-    "android_unique_tests": 20,
-    "scope": "Previous 320dp/1.3-font layout, multi-video and video-control verification remains inherited; those full suites were not rerun for this metadata-only promotion. Full download-engine and native-preview suites also retain their earlier branch verification."
+    "release": "1.0.0-main",
+    "scope": "Browser/player, download engine and JavaScript bridge implementations unchanged. Their full runtime suites and 61 JavaScript bridge tests were not rerun for this thumbnail drawing fix. Minimum API26 remains compile/lint checked."
   },
-  "release_signature": "Verified; same certificate as previous stable and acid preview releases",
+  "release_signature": "Verified; same certificate as 1.0.0 and preceding releases",
   "certificate_sha256": "b4d6077e325aa73bb0af70ea5b05b338268e79f209f0207402501d8f4f2a1f9c",
   "zip_alignment": "Passed 4-byte alignment check",
-  "upgrade_install": "Passed from 0.6.1-acid.5/code10 to 1.0.0-main/code11",
-  "signed_release_manual_launch": "Not performed: automatic approval review blocked the manual emulator launch command without a detailed reason. Debug runtime regression passed; release signing, version and upgrade checks passed.",
-  "original_icon": "User supplied WS.png is byte-identical in source and release APK",
-  "source_privacy": "Reviewed tracked source only; excludes private tools, diagnostics, signing keys, original APK inputs and decompiled code",
-  "scope": "Controlled local HTTP/media fixtures on API34. Search navigation is intercepted by local test responses; no claim of live provider results or universal site compatibility. API26 remains compile/lint checked. Pause and persistent download resume remain unavailable.",
-  "apk_sha256": "c1a472ad5d0b712fc7629a8b86e292c70004b9e2fe92af3f1e852ab32fbe8910"
+  "upgrade_install": "Passed from 1.0.0-main/code11 to 1.0.1-main/code12",
+  "signed_release_manual_launch": "Not rerun; runtime checks used the debug build on the owned emulator",
+  "source_privacy": "Packaged from a detached clean release checkout; excludes local analysis/tooling, signing keys and private diagnostics",
+  "apk_sha256": "4c04cf1079d7509fbcabb79c9b913e4d382cefeb36751cd2e06ad7386af17717"
 }

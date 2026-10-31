@@ -1,6 +1,7 @@
 package io.websurf.app;
 
 import android.content.Context;
+import android.graphics.Color;
 import android.graphics.Rect;
 import android.graphics.Typeface;
 import android.text.TextUtils;
@@ -57,7 +58,9 @@ public final class ResourceRow extends LinearLayout {
     previewParams.rightMargin = dp(14);
     media.addView(preview, previewParams);
     picture = new FrameLayout(context);
-    picture.setBackground(Ui.outline(context, Ui.BG, Ui.BORDER, 0));
+    picture.setBackground(Ui.shape(context, Ui.BG, 0));
+    // Draw the frame after previews and retain it when retry feedback replaces the background.
+    picture.setForeground(Ui.outline(context, Color.TRANSPARENT, Ui.BORDER, 0));
     picture.setClipToOutline(true);
     preview.addView(picture, new LayoutParams(-1, dp(compact ? 75 : 84)));
     image = new ImageView(context);
