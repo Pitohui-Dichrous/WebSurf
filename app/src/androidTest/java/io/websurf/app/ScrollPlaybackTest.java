@@ -12,6 +12,7 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewConfiguration;
 import android.view.ViewGroup;
+import android.webkit.WebView;
 import androidx.media3.common.Player;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.test.core.app.ActivityScenario;
@@ -115,6 +116,113 @@ public final class ScrollPlaybackTest {
   }
 
   @Test
+  public void pageSwipesReclaimBothEdgesAndRevealToolsBeforeReturningToTop() throws Exception {
+    WebView web =
+        ui(
+            a -> {
+              a.closePlayer(false, true);
+              a.current.web.requestFocus();
+              a.current.web.evaluateJavascript(
+                  "document.querySelector('main').scrollIntoView({block:'start',behavior:'instant'})",
+                  null);
+              return a.current.web;
+            });
+    await(
+        "The plain scrolling area did not settle in the focused application window",
+        3000,
+        () ->
+            ui(
+                a ->
+                    a.hasWindowFocus()
+                        && web.isShown()
+                        && !web.isLayoutRequested()
+                        && web.getScrollY() > dp(100)));
+    long epoch = ui(a -> a.current.epoch);
+    Rect expandedPage = ui(a -> pageBounds(web));
+    int[] expanded = ui(ScrollPlaybackTest::barHeights);
+    for (int height : expanded) assertTrue("Expected a visible toolbar", height > 0);
+
+    // Inject in screen coordinates inside the focused WebView. Stay clear of system edge gestures.
+    float x = expandedPage.exactCenterX();
+    drag(
+        x,
+        expandedPage.top + expandedPage.height() * .80f,
+        x,
+        expandedPage.top + expandedPage.height() * .20f,
+        500,
+        true);
+    await(
+        "A page swipe did not collapse every toolbar",
+        2000,
+        () -> ui(a -> total(barHeights(a)) == 0));
+    Rect collapsedPage = ui(a -> pageBounds(web));
+    assertEquals(
+        "Top toolbar space was not returned to the page",
+        expandedPage.top - expanded[0],
+        collapsedPage.top,
+        dp(2));
+    assertEquals(
+        "Bottom toolbar and resource bar left unused space",
+        expandedPage.bottom + expanded[1] + expanded[2],
+        collapsedPage.bottom,
+        dp(2));
+    // Stay well away from the document boundary: reversing direction must reveal the tools
+    // even when the page cannot reach its top during this gesture.
+    drag(
+        x,
+        collapsedPage.top + collapsedPage.height() * .80f,
+        x,
+        collapsedPage.top + collapsedPage.height() * .20f,
+        500,
+        true);
+    int scrollBeforeReverse = ui(a -> web.getScrollY());
+    assertTrue(scrollBeforeReverse > expanded[0] + expanded[1] + expanded[2]);
+
+    float startY = collapsedPage.top + collapsedPage.height() * .25f;
+    long down = SystemClock.uptimeMillis();
+    pointer(down, MotionEvent.ACTION_DOWN, x, startY);
+    float y = startY;
+    try {
+      for (int i = 1; i <= 6; i++) {
+        y = startY + dp(5 * i);
+        SystemClock.sleep(20);
+        pointer(down, MotionEvent.ACTION_MOVE, x, y);
+      }
+      await(
+          "Reverse drag did not partially reveal the controls with the finger down",
+          1200,
+          () ->
+              ui(
+                  a -> {
+                    int[] now = barHeights(a);
+                    return now[0] > 0
+                        && now[0] < expanded[0]
+                        && now[1] + now[2] > 0
+                        && now[1] + now[2] < expanded[1] + expanded[2];
+                  }));
+      float partialY = y;
+      float endY = Math.min(collapsedPage.bottom - dp(12), partialY + total(expanded));
+      for (int i = 1; i <= 12; i++) {
+        y = partialY + (endY - partialY) * i / 12f;
+        SystemClock.sleep(20);
+        pointer(down, MotionEvent.ACTION_MOVE, x, y);
+      }
+      SystemClock.sleep(180);
+      pointer(down, MotionEvent.ACTION_MOVE, x, y);
+    } finally {
+      pointer(down, MotionEvent.ACTION_UP, x, y);
+    }
+    await(
+        "Reverse drag did not restore all controls",
+        2000,
+        () -> ui(a -> java.util.Arrays.equals(expanded, barHeights(a))));
+    assertEquals(expandedPage, ui(a -> pageBounds(web)));
+    assertTrue("Tools only reappeared at the document top", ui(a -> web.getScrollY() > 0));
+    assertSame(web, ui(a -> a.current.web));
+    assertEquals(epoch, (long) ui(a -> a.current.epoch));
+  }
+
+  @Test
   public void draggingPicturePinsAndRestoresTheSamePlayer() throws Exception {
     ExoPlayer player = ui(a -> a.player);
     View surface = ui(a -> a.playerView.getVideoSurfaceView());
@@ -129,16 +237,22 @@ public final class ScrollPlaybackTest {
         2500,
         () -> ui(a -> a.current.web.getScrollY() > dp(80)));
     await("Player did not pin at the top", 2500, () -> ui(a -> a.inlinePinned));
+    await(
+        "Dragging the inline picture left visible toolbars",
+        2000,
+        () -> ui(a -> total(barHeights(a)) == 0));
     assertEquals(VideoChrome.Mode.INLINE, ui(a -> a.playerMode));
     assertSame(player, ui(a -> a.player));
     assertSame(surface, ui(a -> a.playerView.getVideoSurfaceView()));
     Rect pinned = ui(a -> screenBounds(a.videoChrome));
-    assertEquals("Pinned picture was hidden behind browser chrome", page.top, pinned.top, dp(2));
+    Rect scrollingPage = ui(a -> screenBounds(a.current.web));
+    assertEquals(
+        "Pinned picture was hidden behind browser chrome", scrollingPage.top, pinned.top, dp(2));
     assertTrue("Player did not expand with continued scrolling", pinned.width() > initial.width());
     UiCaptureTest.shot(ApplicationProvider.getApplicationContext(), "13-scroll-pinned");
 
     start = picturePoint();
-    drag(start[0], start[1], start[0], page.bottom - dp(20), 520, true);
+    drag(start[0], start[1], start[0], scrollingPage.bottom - dp(20), 520, true);
     await(
         "Reverse drag did not restore page position and inline geometry",
         3000,
@@ -335,6 +449,34 @@ public final class ScrollPlaybackTest {
     view.getLocationOnScreen(screen);
     return new Rect(
         screen[0], screen[1], screen[0] + view.getWidth(), screen[1] + view.getHeight());
+  }
+
+  private static int[] barHeights(MainActivity activity) {
+    return new int[] {
+      visibleRect(activity.topBar).height(),
+      visibleRect(activity.resourceBar).height(),
+      visibleRect(activity.bottomBar).height()
+    };
+  }
+
+  private static int total(int[] heights) {
+    return heights[0] + heights[1] + heights[2];
+  }
+
+  private static Rect visibleRect(View view) {
+    Rect visible = new Rect();
+    if (!view.isShown() || !view.getGlobalVisibleRect(visible)) visible.setEmpty();
+    return visible;
+  }
+
+  private static Rect pageBounds(WebView web) {
+    Rect result = screenBounds(web);
+    Rect visibleWindow = new Rect();
+    web.getWindowVisibleDisplayFrame(visibleWindow);
+    assertTrue(
+        "WebView is outside the visible window: " + result + " / " + visibleWindow,
+        result.intersect(visibleWindow));
+    return result;
   }
 
   private static View findDescription(View view, String description) {

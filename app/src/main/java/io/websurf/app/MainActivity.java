@@ -39,6 +39,7 @@ public class MainActivity extends Activity {
   SharedPreferences prefs;
   FrameLayout root, webContainer, fullscreenWeb;
   LinearLayout shell, topBar, bottomBar, resourceBar;
+  private ScrollControls scrollControls;
   EditText address;
   boolean addressDark;
   ProgressBar progress;
@@ -131,6 +132,7 @@ public class MainActivity extends Activity {
     shell = new LinearLayout(this);
     shell.setOrientation(LinearLayout.VERTICAL);
     root.addView(shell, new FrameLayout.LayoutParams(-1, -1));
+    scrollControls = new ScrollControls(this);
     topBar = new LinearLayout(this);
     topBar.setGravity(Gravity.CENTER_VERTICAL);
     topBar.setPadding(dp(8), dp(6), dp(8), dp(6));
@@ -164,11 +166,12 @@ public class MainActivity extends Activity {
     downloadBadge.setVisibility(View.GONE);
     topBar.addView(downloadControl, lp(48, 48));
     downloadsButton.setOnClickListener(v -> showDownloads());
-    shell.addView(topBar, new LinearLayout.LayoutParams(-1, -2));
+    shell.addView(scrollControls.header, new LinearLayout.LayoutParams(-1, -2));
+    scrollControls.header.addView(topBar, new LinearLayout.LayoutParams(-1, -2));
     progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
     progress.setMax(100);
     progress.setProgressTintList(android.content.res.ColorStateList.valueOf(Ui.ACCENT));
-    shell.addView(progress, new LinearLayout.LayoutParams(-1, dp(2)));
+    scrollControls.header.addView(progress, new LinearLayout.LayoutParams(-1, dp(2)));
     webContainer = new FrameLayout(this);
     shell.addView(webContainer, new LinearLayout.LayoutParams(-1, 0, 1));
     resourceBar = new LinearLayout(this);
@@ -189,7 +192,8 @@ public class MainActivity extends Activity {
     resourceBar.addView(resBtn, lp(48, 48));
     resBtn.setOnClickListener(v -> showResources("视频"));
     resourceBar.setOnClickListener(v -> showResources("视频"));
-    shell.addView(resourceBar, new LinearLayout.LayoutParams(-1, -2));
+    shell.addView(scrollControls.footer, new LinearLayout.LayoutParams(-1, -2));
+    scrollControls.footer.addView(resourceBar, new LinearLayout.LayoutParams(-1, -2));
     bottomBar = new LinearLayout(this);
     bottomBar.setGravity(Gravity.CENTER);
     back = addNav("back", "后退", () -> goBack());
@@ -231,7 +235,7 @@ public class MainActivity extends Activity {
     tabButton.setOnClickListener(v -> showTabs());
     bottomBar.addView(tabButton, new LinearLayout.LayoutParams(0, dp(48), 1));
     addNav("more", "菜单", () -> showMenu());
-    shell.addView(bottomBar, new LinearLayout.LayoutParams(-1, dp(54)));
+    scrollControls.footer.addView(bottomBar, new LinearLayout.LayoutParams(-1, dp(54)));
     setContentView(root);
     ViewCompat.setOnApplyWindowInsetsListener(
         root,
@@ -242,6 +246,7 @@ public class MainActivity extends Activity {
                       | WindowInsetsCompat.Type.ime()
                       | WindowInsetsCompat.Type.displayCutout());
           v.setPadding(i.left, i.top, i.right, i.bottom);
+          if (insets.isVisible(WindowInsetsCompat.Type.ime())) scrollControls.reveal();
           return insets;
         });
     applyChromeTheme();
@@ -414,6 +419,22 @@ public class MainActivity extends Activity {
     current.web.loadUrl(normalizeAddress(url, searchEngine()));
   }
 
+  private void observePageGesture(WebView web, MotionEvent event) {
+    if (current == null || web != current.web || fullscreenWeb != null || immersivePlayer || inPip)
+      return;
+    if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+      WindowInsetsCompat insets = ViewCompat.getRootWindowInsets(web);
+      android.view.accessibility.AccessibilityManager accessibility =
+          getSystemService(android.view.accessibility.AccessibilityManager.class);
+      if ((insets != null && insets.isVisible(WindowInsetsCompat.Type.ime()))
+          || accessibility.isTouchExplorationEnabled()) {
+        scrollControls.reveal();
+        return;
+      }
+    }
+    scrollControls.observe(event);
+  }
+
   @SuppressWarnings("SetJavaScriptEnabled")
   BrowserTab newTab(String url, boolean select) {
     if (tabs.size() >= 8) {
@@ -421,11 +442,23 @@ public class MainActivity extends Activity {
       return null;
     }
     BrowserTab tab = new BrowserTab();
-    WebView w = new WebView(this);
+    WebView w =
+        new WebView(this) {
+          @Override
+          public boolean dispatchTouchEvent(MotionEvent event) {
+            observePageGesture(this, event);
+            return super.dispatchTouchEvent(event);
+          }
+        };
     tab.web = w;
     w.setOnScrollChangeListener(
         (view, x, y, oldX, oldY) -> {
           if (tab == playerTab && playerMode == VideoChrome.Mode.INLINE && !inPip)
+            layoutNativeInline();
+        });
+    w.addOnLayoutChangeListener(
+        (view, l, t, r, b, oldL, oldT, oldR, oldB) -> {
+          if (tab == playerTab && (b - t != oldB - oldT || r - l != oldR - oldL))
             layoutNativeInline();
         });
     w.setBackgroundColor(Ui.BG);
@@ -506,6 +539,7 @@ public class MainActivity extends Activity {
             tab.framePlaying = "";
             if (tab == playerTab) closePlayer(false, false);
             if (tab == current) {
+              scrollControls.reveal();
               address.setText(url);
               updateResourceBar();
               progress.setVisibility(View.VISIBLE);
@@ -974,6 +1008,7 @@ public class MainActivity extends Activity {
 
   void selectTab(BrowserTab tab) {
     if (current == tab) return;
+    scrollControls.reveal();
     closePlayer(false, false);
     if (current != null) current.web.onPause();
     current = tab;
@@ -2610,6 +2645,7 @@ public class MainActivity extends Activity {
   @Override
   public void onConfigurationChanged(android.content.res.Configuration config) {
     super.onConfigurationChanged(config);
+    scrollControls.reveal();
     root.post(this::layoutPlayer);
   }
 
@@ -2638,6 +2674,7 @@ public class MainActivity extends Activity {
   @Override
   protected void onPause() {
     super.onPause();
+    scrollControls.reveal();
     resumed = false;
     CookieManager.getInstance().flush();
   }
