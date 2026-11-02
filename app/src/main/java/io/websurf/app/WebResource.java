@@ -9,6 +9,8 @@ import java.util.Map;
 public final class WebResource {
   public final String url;
   public boolean frozenDownloadHeaders;
+  public boolean requestHeadersCaptured;
+  public String referrerPolicy = "";
   public final String transferScope = java.util.UUID.randomUUID().toString();
   public String mime = "", kind = "其他", source = "网络请求", title = "", pageUrl = "";
 

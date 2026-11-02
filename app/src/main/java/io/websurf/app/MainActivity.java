@@ -560,14 +560,20 @@ public class MainActivity extends Activity {
           @Override
           public WebResourceResponse shouldInterceptRequest(
               WebView view, WebResourceRequest request) {
-            if (!request.isForMainFrame() && "GET".equals(request.getMethod())) {
+            if ("GET".equals(request.getMethod())) {
               String url = request.getUrl().toString();
               Map<String, String> headers = new LinkedHashMap<>(request.getRequestHeaders());
+              if (request.isForMainFrame()) {
+                tab.navigationRequestHeaders = headers;
+                tab.navigationRequestUrl = url;
+              }
               long epoch = tab.epoch;
               handler.post(
                   () -> {
-                    if (tabs.contains(tab) && epoch == tab.epoch)
-                      observe(tab, url, "", "网络请求", headers, 0, 0, tab.url);
+                    if (tabs.contains(tab) && epoch == tab.epoch) {
+                      WebResource resource = observe(tab, url, "", "网络请求", headers, 0, 0, tab.url);
+                      if (resource != null) captureRequestHeaders(resource, headers);
+                    }
                   });
             }
             return null;
@@ -660,7 +666,16 @@ public class MainActivity extends Activity {
         (uri, ua, disposition, mime, length) -> {
           WebResource resource =
               observe(tab, uri, mime, "下载链接", Collections.emptyMap(), 0, 0, tab.url);
-          if (resource != null) confirmDownload(resource);
+          if (resource != null) {
+            if (!tab.navigationRequestUrl.isBlank())
+              captureRequestHeaders(
+                  resource,
+                  ScopedHttpDataSource.scoped(
+                      tab.navigationRequestUrl, uri, tab.navigationRequestHeaders));
+            if (ua != null && !ua.isBlank()) resource.headers.put("User-Agent", ua);
+            if (resource.isVideo() || "音频".equals(resource.kind)) resourceActions(resource);
+            else confirmDownload(resource);
+          }
         });
     tabs.add(tab);
     if (select) selectTab(tab);
@@ -686,6 +701,8 @@ public class MainActivity extends Activity {
               page);
       if (found != null && found.previewIdentity.isEmpty() && event.has("poster"))
         updatePoster(found, event.optString("poster"));
+      if (found != null && event.has("referrerPolicy"))
+        found.referrerPolicy = event.optString("referrerPolicy");
       return;
     }
     if (event.optString("mediaId").isBlank() || !event.optBoolean("video", true)) return;
@@ -911,11 +928,38 @@ public class MainActivity extends Activity {
     }
   }
 
+  void captureRequestHeaders(WebResource resource, Map<String, String> headers) {
+    resource.requestHeadersCaptured = true;
+    // Absence is meaningful: no-referrer/same-origin must not acquire an invented Referer.
+    resource
+        .headers
+        .keySet()
+        .removeIf(
+            name ->
+                name.equalsIgnoreCase("Referer")
+                    || name.equalsIgnoreCase("Origin")
+                    || name.equalsIgnoreCase("User-Agent")
+                    || name.equalsIgnoreCase("Authorization"));
+    for (Map.Entry<String, String> entry : headers.entrySet()) {
+      String name = entry.getKey();
+      if (name.equalsIgnoreCase("Referer")
+          || name.equalsIgnoreCase("Origin")
+          || name.equalsIgnoreCase("User-Agent")
+          || name.equalsIgnoreCase("Authorization")) resource.headers.put(name, entry.getValue());
+    }
+  }
+
   Map<String, String> headersFor(WebResource r) {
     Map<String, String> h = new LinkedHashMap<>(r.headers);
     if (r.frozenDownloadHeaders) return h;
-    if (current != null) h.put("User-Agent", current.web.getSettings().getUserAgentString());
-    if (!r.pageUrl.isBlank() && !h.containsKey("Referer")) h.put("Referer", r.pageUrl);
+    if (current != null
+        && h.keySet().stream().noneMatch(name -> name.equalsIgnoreCase("User-Agent")))
+      h.put("User-Agent", current.web.getSettings().getUserAgentString());
+    if (!r.requestHeadersCaptured
+        && h.keySet().stream().noneMatch(name -> name.equalsIgnoreCase("Referer"))) {
+      String referrer = ReferrerPolicy.forRequest(r.pageUrl, r.url, r.referrerPolicy);
+      if (!referrer.isBlank()) h.put("Referer", referrer);
+    }
     String cookie = CookieManager.getInstance().getCookie(r.url);
     if (cookie != null && !cookie.isBlank()) h.put("Cookie", cookie);
     return h;
@@ -976,8 +1020,11 @@ public class MainActivity extends Activity {
             ? "视频 " + count + " · 资源 " + current.resources.size()
             : "网页资源 · " + current.resources.size());
     if (takeoverButton != null) {
-      takeoverButton.setText(player != null && playerTab == current ? "网页播放" : "接管播放");
-      takeoverButton.setEnabled(player != null || !current.videos.isEmpty());
+      takeoverButton.setText(
+          player != null && playerTab == current
+              ? "网页播放"
+              : current.videos.isEmpty() && count > 0 ? "播放视频" : "接管播放");
+      takeoverButton.setEnabled(player != null || !current.videos.isEmpty() || count > 0);
     }
   }
 
@@ -1512,6 +1559,19 @@ public class MainActivity extends Activity {
     if (player != null && playerTab == current) {
       closePlayer(true, true);
       return;
+    }
+    if (current != null && current.videos.isEmpty()) {
+      List<WebResource> videos = new ArrayList<>();
+      for (WebResource resource : current.resources.values())
+        if (resource.isVideo()) videos.add(resource);
+      if (videos.size() == 1) {
+        openPlayer(videos.get(0), 0);
+        return;
+      }
+      if (videos.size() > 1) {
+        showResources("视频");
+        return;
+      }
     }
     if (current == null || current.videos.isEmpty()) {
       toast("尚未发现可接管的视频");

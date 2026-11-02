@@ -447,7 +447,15 @@
   function scan() {
     scanPending=false;if(disposed)return;checkFrames();media.forEach(state=>{if(!state.element.isConnected)forget(state);});
     document.querySelectorAll('video,audio').forEach(inspect);document.querySelectorAll('img').forEach(i=>resource(i.currentSrc||i.src,'image/*','网页图片'));
-    document.querySelectorAll('a[download]').forEach(a=>resource(a.href,a.type,'下载链接'));scheduleLayout();
+    document.querySelectorAll('a[href]').forEach(a=>{
+      const url=httpUrl(a.href);if(!url)return;
+      if(!a.hasAttribute('download')&&!/^(video|audio)\//i.test(a.type||'')&&!/\.(mp4|m4v|m3u8|webm|mov|mkv|flv|mp3|m4a|aac|wav|ogg|flac|opus)([?#]|$)/i.test(new URL(url).pathname))return;
+      const meta=document.querySelector('meta[name="referrer"]');
+      // A native export has no browser request yet: do not invent a cross-origin page referrer.
+      // The actual request headers, when observed, take precedence over this conservative fallback.
+      const policy=/(^|\s)noreferrer(\s|$)/i.test(a.rel||'')?'no-referrer':a.referrerPolicy||(meta&&meta.content)||(new URL(url).origin!==new URL(location.href).origin?'no-referrer':'');
+      resource(url,a.type,'下载链接',{referrerPolicy:policy});
+    });scheduleLayout();
   }
   function scheduleScan(){if(!scanPending&&!disposed){scanPending=true;setTimeout(scan,100);}}
   function layouts(){
@@ -543,6 +551,6 @@
   const originalOpen=XMLHttpRequest.prototype.open;
   XMLHttpRequest.prototype.open=function(){this.addEventListener('load',function(){resource(this.responseURL,this.getResponseHeader('content-type'),'XHR');},{once:true});return originalOpen.apply(this,arguments);};
   try{new PerformanceObserver(list=>list.getEntries().forEach(e=>resource(e.name,'','资源时间线'))).observe({type:'resource',buffered:true});}catch(_){}
-  function ready(){scan();new MutationObserver(()=>{scheduleLayout();scheduleScan();}).observe(document.documentElement,{childList:true,subtree:true,attributes:true,attributeFilter:['src','srcdoc','srcset','poster','style','class','hidden','label','data-quality','data-res','res','size','data-resolution']});motionTick();}
+  function ready(){scan();new MutationObserver(()=>{scheduleLayout();scheduleScan();}).observe(document.documentElement,{childList:true,subtree:true,attributes:true,attributeFilter:['src','srcdoc','srcset','poster','style','class','hidden','label','data-quality','data-res','res','size','data-resolution','href','download','type','rel','referrerpolicy','name','content']});motionTick();}
   if(document.documentElement)ready();else document.addEventListener('DOMContentLoaded',ready,{once:true});
 })();

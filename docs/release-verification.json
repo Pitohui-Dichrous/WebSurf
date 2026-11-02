@@ -1,34 +1,39 @@
 {
-  "version": "1.0.1-main",
-  "public_version": "1.0.1",
-  "version_code": 12,
-  "date": "2026-11-01",
+  "version": "1.0.2-main",
+  "public_version": "1.0.2",
+  "version_code": 13,
+  "date": "2026-11-02",
   "channel": "stable",
   "branch": "main",
-  "change_scope": "Keep the resource thumbnail border visible above opaque previews and loading artwork, including failed-preview retry feedback. Public stable release headings omit the branch suffix.",
-  "reproduction": "New pixel regression fails against the previous 1.0.0 debug APK: thumbnail red pixels replaced the expected left border. The same case passes against this build.",
+  "change_scope": "Preserve observed browser request headers, including absent Referer; support direct media export links and browser attachment playback choices without site allowlists.",
   "rerun_this_release": {
-    "java_tests": 42,
+    "java_tests": 45,
+    "javascript_tests": 62,
     "version_workflow_tests": 7,
-    "android_unique_tests": 17,
-    "android_executions": 21,
-    "normal_display_tests": 15,
-    "compact_display_tests": 6,
+    "android_tests": 50,
+    "android_suites": {
+      "DirectMediaLinkTest": 3,
+      "BrowserFlowTest": 10,
+      "DownloadEngineInstrumentedTest": 27,
+      "MediaTransferCacheTest": 9,
+      "DownloadSettingsProgressTest": 1
+    },
     "lint_errors": 0,
     "lint_warnings": 51,
-    "device": "Android 14 / API 34 emulator",
-    "layout_validation": "411dp at normal font and 320dp at 1.3 font scale; light/dark themes; actual HTTP wide/square/portrait opaque images; loading/failure/retry completion; pixel samples along all four edges and center content; resource category spacing and long errors",
-    "preview_regression": "All nine existing preview extraction tests passed; artwork animation visibility, stopped animation after completion and retry/row actions also passed"
+    "device": "Android14/API34 emulator",
+    "direct_link_validation": "Real WebView link discovery and trusted navigation to cross-origin attachments; HTTP same-origin referrer policy; redirects; native playback; download output byte equality; case-insensitive captured headers and absence of stale Referer/Origin.",
+    "regression_scope": "Full existing browser flow, download engine, shared media cache and download-settings progress suites passed. Includes HLS conversion, credential scope, Range fallback, concurrency, cancellation and file integrity."
   },
   "inherited_baseline": {
-    "release": "1.0.0-main",
-    "scope": "Browser/player, download engine and JavaScript bridge implementations unchanged. Their full runtime suites and 61 JavaScript bridge tests were not rerun for this thumbnail drawing fix. Minimum API26 remains compile/lint checked."
+    "release": "1.0.1-main",
+    "scope": "Earlier compact/theme artwork border checks and broader visual checks were not rerun; thumbnail drawing code is unchanged. API26 remains compile/lint checked."
   },
-  "release_signature": "Verified; same certificate as 1.0.0 and preceding releases",
+  "release_signature": "Verified; same certificate as previous releases",
   "certificate_sha256": "b4d6077e325aa73bb0af70ea5b05b338268e79f209f0207402501d8f4f2a1f9c",
   "zip_alignment": "Passed 4-byte alignment check",
-  "upgrade_install": "Passed from 1.0.0-main/code11 to 1.0.1-main/code12",
-  "signed_release_manual_launch": "Not rerun; runtime checks used the debug build on the owned emulator",
-  "source_privacy": "Packaged from a detached clean release checkout; excludes local analysis/tooling, signing keys and private diagnostics",
-  "apk_sha256": "4c04cf1079d7509fbcabb79c9b913e4d382cefeb36751cd2e06ad7386af17717"
+  "upgrade_install": "Passed from1.0.1-main/code12 to1.0.2-main/code13",
+  "signed_release_manual_launch": "Not rerun; runtime regression used the debug build.",
+  "privacy": "Source and release APK scanned for supplied private URLs and identifiers; public tests use synthetic loopback data. Clean release source checkout excludes local diagnostics, tools, credentials and signing keys.",
+  "scope": "Controlled synthetic Android regression proves the generic behavior. No claim of universal compatibility or end-to-end validation of an external export service.",
+  "apk_sha256": "b463082eaffae5604953db73528d2035a8cf3c3348938f68f14e8f56a67b1b4e"
 }

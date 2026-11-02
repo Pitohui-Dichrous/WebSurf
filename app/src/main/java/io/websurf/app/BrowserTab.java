@@ -9,6 +9,8 @@ final class BrowserTab {
   long epoch;
   long playGeneration;
   String pendingMedia = "";
+  volatile String navigationRequestUrl = "";
+  volatile java.util.Map<String, String> navigationRequestHeaders = java.util.Map.of();
   final java.util.Set<String> documents = new java.util.HashSet<>();
   boolean takeoverSuppressed;
   String selectedVideo = "";

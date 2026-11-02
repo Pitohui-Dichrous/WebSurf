@@ -56,6 +56,7 @@ class Element extends Events {
   }
   getBoundingClientRect(){return this.box;}
   getAttribute(key){return this.attributes[key]??null;}
+  hasAttribute(key){return Object.hasOwn(this.attributes,key);}
   setAttribute(key,value){this.attributes[key]=String(value);}
   appendChild(child){return this.insertBefore(child,null);}
   insertBefore(child,before){
@@ -98,7 +99,8 @@ function harness({media=[],width=400,height=700,childFrame=false,dark=false}={})
   document.body=new Element('BODY',bounds(0,0,width,height));document.body.ownerDocument=document;
   document.documentElement=new Element('HTML',bounds(0,0,width,height));document.body.parentElement=document.documentElement;
   Object.assign(document,{title:'Playback fixture',createElement:tag=>{const e=new Element(tag.toUpperCase());e.ownerDocument=document;return e;},
-    querySelectorAll(selector){return ({'video,audio':media.filter(m=>m.isConnected),img:images,'a[download]':links,iframe:frames})[selector]||[];}});
+    querySelector(){return null;},
+    querySelectorAll(selector){return ({'video,audio':media.filter(m=>m.isConnected),img:images,'a[download]':links,'a[href]':links,iframe:frames})[selector]||[];}});
   media.forEach(v=>{v.ownerDocument=document;if(!v.parentElement)document.body.appendChild(v);});
   const colorPreference=Object.assign(new Events(),{matches:dark});
   const window=new Events();Object.assign(window,{innerWidth:width,innerHeight:height,scrollX:0,scrollY:0,getComputedStyle:e=>e.css||{},
@@ -131,6 +133,17 @@ function harness({media=[],width=400,height=700,childFrame=false,dark=false}={})
 }
 
 // A native player can safely accept only a deliberate media gesture, never the first autoplay.
+test('direct media links are observed without fetching or playing them and preserve link referrer policy',()=>{
+  const h=harness();h.ack();
+  const media=new Element('A');Object.assign(media,{href:'https://media.example/clip.mp4?signature=fixture',type:'',rel:'noreferrer',referrerPolicy:''});
+  const ordinary=new Element('A');Object.assign(ordinary,{href:'https://page.example/article',type:'',rel:'',referrerPolicy:''});
+  const opaque=new Element('A');Object.assign(opaque,{href:'https://media.example/export',type:'video/mp4',rel:'',referrerPolicy:'same-origin'});
+  h.links.push(media,ordinary,opaque);h.scan();
+  const links=h.events('resource').filter(e=>e.source==='下载链接');
+  assert.equal(links.length,2);assert.equal(links.find(e=>e.url===media.href).referrerPolicy,'no-referrer');
+  assert.equal(links.find(e=>e.url===opaque.href).referrerPolicy,'same-origin');assert.equal(h.events('play').length,0);
+});
+
 test('handshake queues data, ignores a foreign ack, and flushes exactly once with document epoch',()=>{
   const h=harness({media:[new Media({playing:true})]});assert.deepEqual(h.messages.map(e=>e.type),['hello']);
   h.ack(90,'foreign');assert.equal(h.events('play').length,0);h.ack(7);
@@ -370,7 +383,7 @@ test('frame commands accept only their direct parent and address one document an
 });
 test('resource observations keep images, downloads, source variants and changed dimensions',()=>{
   const v=new Media({width:640,height:360}),s=new Element('SOURCE');s.src='https://media.example/high.m3u8';s.type='application/vnd.apple.mpegurl';v.appendChild(s);
-  const h=harness({media:[v]});h.ack();h.images.push({src:'https://media.example/photo.jpg'});h.links.push({href:'https://media.example/document.pdf',type:'application/pdf'});h.scan();
+  const h=harness({media:[v]});h.ack();h.images.push({src:'https://media.example/photo.jpg'});h.links.push({href:'https://media.example/document.pdf',type:'application/pdf',hasAttribute:name=>name==='download'});h.scan();
   v.videoWidth=1280;v.videoHeight=720;v.dispatch('resize');v.videoWidth=640;v.videoHeight=360;v.dispatch('resize');
   const resources=h.events('resource');assert.deepEqual(resources.filter(e=>e.url===v.src).map(e=>e.height),[360,720,360]);
   assert.ok(resources.some(e=>e.url===s.src));assert.ok(resources.some(e=>e.mime==='image/*'));assert.ok(resources.some(e=>e.mime==='application/pdf'));
