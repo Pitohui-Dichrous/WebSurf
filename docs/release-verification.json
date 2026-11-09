@@ -1,35 +1,36 @@
 {
-  "version": "1.0.3-main",
-  "public_version": "1.0.3",
-  "version_code": 14,
+  "version": "1.0.4-main",
+  "public_version": "1.0.4",
+  "version_code": 15,
   "channel": "stable",
   "branch": "main",
-  "date": "2026-11-02",
-  "change_scope": "Scroll the address, resource and bottom bars together with page and inline video drags, and reclaim their space for the page.",
+  "date": "2026-11-09",
+  "change_scope": "Reduce the luminance of persistent browser controls, outline the dark takeover button, and periodically shift small marks within fixed touch targets.",
   "release_checks": {
     "java_tests": 45,
+    "javascript_tests": 62,
+    "version_helper_tests": 7,
     "lint_errors": 0,
     "lint_warnings": 51,
-    "release_signature": "verified against previous signing certificate",
+    "release_signature": "Verified against the previous production certificate",
     "certificate_sha256": "b4d6077e325aa73bb0af70ea5b05b338268e79f209f0207402501d8f4f2a1f9c",
-    "zip_alignment": "verified",
-    "device": "physical Android 14 device",
-    "upgrade_install": "In-place upgrade of io.websurf.app from 1.0.1 (12) to 1.0.3 (14), with unchanged first installation time",
-    "release_launch": "Signed, installed release cold started successfully"
+    "zip_alignment": "Verified",
+    "device": "Physical Android 14 device",
+    "upgrade_install": "Updated the production app in place from 1.0.3 (14) to 1.0.4 (15). The first installation time was preserved and the on-device base APK matched the release APK.",
+    "release_launch": "Successful cold start after the update"
   },
   "feature_verification": {
-    "android_tests": 8,
-    "build": "Debug target on Android 14 hardware, run on the same feature sources before preparing the release version",
+    "android_tests": 16,
+    "build": "Debug instrumentation on Android 14 hardware using local synthetic webpages",
     "suites": [
-      "ScrollPlaybackTest (5)",
-      "BrowserNavigationSettingsTest (2)",
-      "AcidDesignTest#shellAndUtilityPanelsKeepCurrentDocumentAcrossThemes (1)"
+      "AcidDesignTest (7)",
+      "ThemeResourceUiTest (4)",
+      "ScrollPlaybackTest (5)"
     ],
-    "coverage": "Continuous collapse and reverse drag mid-page, actual viewport expansion, preserved WebView and inline player, pinning, fling, seeking, held speed, navigation and both themes."
+    "coverage": "Both toolbar palettes, contrast and pressed states, badge containment, tab number alignment, original hit targets, native video scrolling and theme changes on the same page. A separate real-time run tapped the local page roughly every two seconds for over a minute. Hardware-composited window crops confirmed that WS and the menu glyph moved while their touch bounds stayed fixed."
   },
   "inherited_baseline": {
-    "release": "1.0.2-main",
-    "scope": "Download, shared cache and web bridge suites retain the prior release results. They were not rerun for this native browser shell change."
+    "scope": "The transfer, HLS conversion and shared-cache implementations are unchanged. Their dedicated device suites were not rerun for this browser chrome patch."
   },
-  "apk_sha256": "4aef973bacd367154f2136be43777fa2f6e3c525796475d416730039ffa62058"
+  "apk_sha256": "f6357b573bf6ded34e26e60617323963cbcdeb62f6a321529d7d7c1faa7f358e"
 }

@@ -4,6 +4,7 @@ import android.Manifest;
 import android.app.*;
 import android.content.*;
 import android.content.pm.PackageManager;
+import android.content.res.ColorStateList;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.net.Uri;
@@ -40,6 +41,7 @@ public class MainActivity extends Activity {
   FrameLayout root, webContainer, fullscreenWeb;
   LinearLayout shell, topBar, bottomBar, resourceBar;
   private ScrollControls scrollControls;
+  ChromePixelShift chromePixelShift;
   EditText address;
   boolean addressDark;
   ProgressBar progress;
@@ -159,9 +161,11 @@ public class MainActivity extends Activity {
     downloadControl.addView(downloadsButton, new FrameLayout.LayoutParams(dp(48), dp(48)));
     downloadBadge = Ui.mono(this, "", 10, Color.BLACK);
     downloadBadge.setGravity(Gravity.CENTER);
-    downloadBadge.setBackground(Ui.shape(this, Ui.ACCENT, 8));
+    downloadBadge.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
     FrameLayout.LayoutParams badgePosition =
         new FrameLayout.LayoutParams(dp(18), dp(16), Gravity.TOP | Gravity.END);
+    badgePosition.topMargin = ChromePixelShift.MAX_OFFSET_PX;
+    badgePosition.setMarginEnd(ChromePixelShift.MAX_OFFSET_PX);
     downloadControl.addView(downloadBadge, badgePosition);
     downloadBadge.setVisibility(View.GONE);
     topBar.addView(downloadControl, lp(48, 48));
@@ -177,7 +181,6 @@ public class MainActivity extends Activity {
     resourceBar = new LinearLayout(this);
     resourceBar.setGravity(Gravity.CENTER_VERTICAL);
     resourceBar.setPadding(dp(12), dp(6), dp(8), dp(6));
-    resourceBar.setBackgroundColor(Ui.PLANE);
     resourceText = Ui.text(this, "网页资源", 12, Ui.PLANE_INK);
     resourceText.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
     resourceText.setMaxLines(2);
@@ -235,6 +238,9 @@ public class MainActivity extends Activity {
     tabButton.setOnClickListener(v -> showTabs());
     bottomBar.addView(tabButton, new LinearLayout.LayoutParams(0, dp(48), 1));
     addNav("more", "菜单", () -> showMenu());
+    chromePixelShift =
+        new ChromePixelShift(
+            shellMark, bottomBar, tabButton, tabMark, downloadsButton, downloadBadge);
     scrollControls.footer.addView(bottomBar, new LinearLayout.LayoutParams(-1, dp(54)));
     setContentView(root);
     ViewCompat.setOnApplyWindowInsetsListener(
@@ -2485,38 +2491,42 @@ public class MainActivity extends Activity {
 
   void applyChromeTheme() {
     refreshLegacyAddressTheme();
+    boolean dark = Ui.isDark(this);
+    // These colors belong to the persistent browser controls. Panels and page themes use Ui's
+    // original palette, including its full accent for transient actions.
+    int bar = dark ? Color.BLACK : 0xffe4e4e4;
+    int accent = dark ? 0xff9ccb18 : 0xffabe300;
+    int ink = dark ? 0xffbdbdbd : Color.BLACK;
+    int resourceInk = dark ? accent : Color.BLACK;
+    int border = dark ? 0xff333333 : 0xffadadad;
     root.setBackgroundColor(Ui.BG);
-    topBar.setBackgroundColor(Ui.BG);
-    bottomBar.setBackgroundColor(Ui.BG);
-    resourceBar.setBackground(Ui.outline(this, Ui.PLANE, Ui.BORDER, 0));
-    resourceText.setTextColor(Ui.PLANE_INK);
-    shellMark.setTextColor(Ui.CONTROL);
-    takeoverButton.setBackgroundTintList(null);
-    Ui.ripple(takeoverButton, Ui.ACTION, 2);
-    takeoverButton.setTextColor(
-        new android.content.res.ColorStateList(
-            new int[][] {new int[] {-android.R.attr.state_enabled}, new int[] {}},
-            new int[] {Ui.isDark(this) ? 0xff4c6400 : 0xff7c9e21, Ui.ACTION_INK}));
-    address.setTextColor(Ui.TEXT);
+    topBar.setBackgroundColor(bar);
+    bottomBar.setBackgroundColor(bar);
+    resourceBar.setBackground(Ui.outline(this, dark ? Color.BLACK : accent, border, 0));
+    resourceText.setTextColor(resourceInk);
+    shellMark.setTextColor(resourceInk);
+    Ui.styleTakeoverButton(takeoverButton, accent);
+    address.setTextColor(ink);
     address.setHintTextColor(Ui.MUTED);
-    address.setBackground(Ui.outline(this, Ui.SURFACE, Ui.BORDER, 2));
+    address.setBackground(Ui.outline(this, dark ? Ui.SURFACE : 0xffeeeeee, border, 2));
     tintTextInput(address);
-    tabCount.setTextColor(Ui.TEXT);
-    tabGlyph.setImageTintList(android.content.res.ColorStateList.valueOf(Ui.TEXT));
-    tintIcons(topBar);
-    tintIcons(bottomBar);
-    tintIcons(resourceBar);
-    for (int i = 0; i < resourceBar.getChildCount(); i++)
-      if (resourceBar.getChildAt(i) instanceof ImageButton icon)
-        icon.setImageTintList(android.content.res.ColorStateList.valueOf(Ui.PLANE_INK));
+    tabCount.setTextColor(ink);
+    tabGlyph.setImageTintList(ColorStateList.valueOf(ink));
+    ColorStateList navColors =
+        new ColorStateList(
+            new int[][] {new int[] {-android.R.attr.state_enabled}, new int[] {}},
+            new int[] {dark ? 0xff606060 : 0xff7e7e7e, ink});
+    tintIcons(topBar, navColors);
+    tintIcons(bottomBar, navColors);
+    tintIcons(resourceBar, ColorStateList.valueOf(resourceInk));
     downloadBadge.setTextColor(Color.BLACK);
-    downloadBadge.setBackground(Ui.shape(this, Ui.ACCENT, 0));
+    downloadBadge.setBackground(Ui.shape(this, accent, 0));
     getWindow().setStatusBarColor(Ui.BG);
     getWindow().setNavigationBarColor(Ui.BG);
     getWindow()
         .getDecorView()
         .setSystemUiVisibility(
-            Ui.isDark(this)
+            dark
                 ? 0
                 : View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
     for (BrowserTab tab : tabs) sendPageTheme(tab);
@@ -2529,15 +2539,11 @@ public class MainActivity extends Activity {
         null);
   }
 
-  void tintIcons(ViewGroup group) {
+  private void tintIcons(ViewGroup group, ColorStateList colors) {
     for (int i = 0; i < group.getChildCount(); i++) {
       View v = group.getChildAt(i);
-      if (v instanceof ImageButton b)
-        b.setImageTintList(
-            new android.content.res.ColorStateList(
-                new int[][] {new int[] {-android.R.attr.state_enabled}, new int[] {}},
-                new int[] {(Ui.TEXT & 0x00ffffff) | 0x66000000, Ui.TEXT}));
-      else if (v instanceof ViewGroup g) tintIcons(g);
+      if (v instanceof ImageButton b) b.setImageTintList(colors);
+      else if (v instanceof ViewGroup g) tintIcons(g, colors);
     }
   }
 
@@ -2655,6 +2661,8 @@ public class MainActivity extends Activity {
     super.onPictureInPictureModeChanged(enabled, config);
     inPip = enabled;
     shell.setVisibility(enabled ? View.INVISIBLE : View.VISIBLE);
+    if (enabled) chromePixelShift.stop();
+    else if (resumed) chromePixelShift.start();
     layoutPlayer();
   }
 
@@ -2663,6 +2671,7 @@ public class MainActivity extends Activity {
     super.onResume();
     updateTaskBranding();
     resumed = true;
+    if (!inPip) chromePixelShift.start();
     if (pendingDownloadFeedback != null) {
       DownloadStore.Job job = pendingDownloadFeedback;
       pendingDownloadFeedback = null;
@@ -2674,6 +2683,7 @@ public class MainActivity extends Activity {
   @Override
   protected void onPause() {
     super.onPause();
+    chromePixelShift.stop();
     scrollControls.reveal();
     resumed = false;
     CookieManager.getInstance().flush();

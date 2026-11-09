@@ -185,6 +185,28 @@ public final class Ui {
     return button;
   }
 
+  static void styleTakeoverButton(Button button, int accent) {
+    Context context = button.getContext();
+    int[][] states = {{-android.R.attr.state_enabled}, {android.R.attr.state_pressed}, {}};
+    int fill = dark ? 0xff10130a : Color.BLACK;
+    GradientDrawable surface = shape(context, fill, 2);
+    surface.setColor(new ColorStateList(states, new int[] {fill, dark ? accent : fill, fill}));
+    int stroke = dark ? 0xff637823 : Color.BLACK;
+    surface.setStroke(
+        dp(context, 1),
+        new ColorStateList(states, new int[] {dark ? 0xff3c472c : stroke, accent, stroke}));
+    button.setBackgroundTintList(null);
+    button.setBackground(
+        new RippleDrawable(
+            ColorStateList.valueOf(dark ? (accent & 0x00ffffff) | 0x20000000 : 0x30ffffff),
+            surface,
+            shape(context, Color.WHITE, 2)));
+    button.setTextColor(
+        new ColorStateList(
+            states,
+            new int[] {dark ? 0xff778655 : 0xff7c9e21, dark ? Color.BLACK : accent, accent}));
+  }
+
   /** A short reveal for a newly visible panel; no layout properties are animated. */
   public static void enter(View view) {
     view.animate().cancel();

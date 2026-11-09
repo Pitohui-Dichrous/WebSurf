@@ -7,11 +7,17 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
+import android.graphics.Color;
 import android.graphics.Rect;
+import android.graphics.drawable.Drawable;
 import android.net.Uri;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.SystemClock;
 import android.text.Layout;
 import android.view.MotionEvent;
+import android.view.PixelCopy;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewParent;
@@ -19,8 +25,10 @@ import android.view.inputmethod.InputMethodManager;
 import android.webkit.WebView;
 import android.widget.EditText;
 import android.widget.HorizontalScrollView;
+import android.widget.ImageButton;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import androidx.core.graphics.ColorUtils;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
 import androidx.test.core.app.ActivityScenario;
@@ -33,6 +41,9 @@ import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import org.junit.After;
@@ -467,6 +478,318 @@ public final class AcidDesignTest {
           assertEquals("1", a.tabCount.getText().toString());
           return null;
         });
+  }
+
+  @Test
+  public void persistentBarColorsReduceLargeFillsAndKeepDarkControlsLegible() throws Exception {
+    applyTheme(false);
+    ui(
+        a -> {
+          int bars = backgroundSamples(a.topBar)[0];
+          assertEquals(bars, backgroundSamples(a.bottomBar)[0]);
+          assertTrue(Color.luminance(bars) < Color.luminance(0xfff2f2f2));
+          int green = backgroundSamples(a.resourceBar)[0];
+          assertTrue(Color.luminance(green) < Color.luminance(Ui.ACCENT));
+          assertTrue(Color.green(green) > Color.red(green) && Color.red(green) > Color.blue(green));
+          assertTrue(
+              ColorUtils.calculateContrast(a.resourceText.getCurrentTextColor(), green) >= 4.5);
+          return null;
+        });
+    applyTheme(true);
+    ui(
+        a -> {
+          int bottom = backgroundSamples(a.bottomBar)[0];
+          assertEquals(Color.BLACK, bottom);
+          int mark = a.shellMark.getCurrentTextColor();
+          assertTrue(Color.luminance(mark) < Color.luminance(Ui.ACCENT));
+          assertTrue(ColorUtils.calculateContrast(mark, backgroundSamples(a.topBar)[0]) >= 4.5);
+          int badge = backgroundSamples(a.downloadBadge)[0];
+          assertTrue(Color.luminance(badge) < Color.luminance(Ui.ACCENT));
+          assertTrue(
+              ColorUtils.calculateContrast(a.downloadBadge.getCurrentTextColor(), badge) >= 4.5);
+          int tab = a.tabGlyph.getImageTintList().getDefaultColor();
+          assertEquals(tab, a.tabCount.getCurrentTextColor());
+          assertTrue(Color.luminance(tab) < Color.luminance(0xfff5f5f5));
+          assertTrue(ColorUtils.calculateContrast(tab, bottom) >= 4.5);
+          for (int i = 0; i < a.bottomBar.getChildCount(); i++) {
+            if (a.bottomBar.getChildAt(i) instanceof ImageButton icon) {
+              int color = icon.getImageTintList().getDefaultColor();
+              assertTrue(Color.luminance(color) < Color.luminance(0xfff5f5f5));
+              assertTrue(ColorUtils.calculateContrast(color, bottom) >= 3);
+            }
+          }
+          a.takeoverButton.setEnabled(true);
+          int[] button = backgroundSamples(a.takeoverButton);
+          assertTrue(
+              "The large button fill should be near black", Color.luminance(button[0]) < .05);
+          assertTrue(
+              "The outline should remain visible",
+              ColorUtils.calculateContrast(button[1], button[0]) >= 3);
+          assertTrue(
+              ColorUtils.calculateContrast(a.takeoverButton.getCurrentTextColor(), button[0])
+                  >= 4.5);
+          a.takeoverButton.setPressed(true);
+          try {
+            int pressed = backgroundSamples(a.takeoverButton)[0];
+            assertTrue(Color.luminance(pressed) > Color.luminance(button[0]));
+            assertTrue(
+                ColorUtils.calculateContrast(a.takeoverButton.getCurrentTextColor(), pressed)
+                    >= 4.5);
+            assertEquals(bottom, backgroundSamples(a.bottomBar)[0]);
+          } finally {
+            a.takeoverButton.setPressed(false);
+          }
+          return null;
+        });
+  }
+
+  private static int[] backgroundSamples(View view) {
+    Drawable background = view.getBackground();
+    Rect original = new Rect(background.getBounds());
+    int width = Math.max(32, view.getWidth()), height = Math.max(24, view.getHeight());
+    Bitmap sample = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+    try {
+      background.setBounds(0, 0, width, height);
+      background.draw(new Canvas(sample));
+      return new int[] {sample.getPixel(width / 2, height / 2), sample.getPixel(width / 2, 0)};
+    } finally {
+      background.setBounds(original);
+      sample.recycle();
+    }
+  }
+
+  @Test
+  public void pixelShiftMovesInkTogetherAndKeepsOriginalTouchTargets() throws Exception {
+    ui(
+        a -> {
+          a.downloadBadge.setText("1");
+          a.downloadBadge.setVisibility(View.VISIBLE);
+          return null;
+        });
+    await(
+        "Visible browser controls did not finish layout",
+        () -> ui(a -> a.hasWindowFocus() && a.downloadBadge.getWidth() > 0));
+
+    Rect tabTarget =
+        ui(
+            a -> {
+              ChromePixelShift shift = a.chromePixelShift;
+              shift.update(0);
+              View tabMark = (View) a.tabGlyph.getParent();
+              Rect tab = bounds(a.tabButton),
+                  glyph = bounds(a.tabGlyph),
+                  count = bounds(a.tabCount);
+              Rect ws = bounds(a.shellMark),
+                  back = bounds(a.back),
+                  download = bounds(a.downloadsButton);
+              assertSame(tabMark, a.tabCount.getParent());
+              boolean sawMovement = false;
+              // Advance the real timer callback through a full range without waiting on the device.
+              for (int minute = 1; minute <= 16; minute++) {
+                a.updateNavigation();
+                a.updateResourceBar();
+                shift.update(minute * ChromePixelShift.INTERVAL_MS);
+                int x = Math.round(tabMark.getTranslationX());
+                int y = Math.round(tabMark.getTranslationY());
+                assertEquals((float) x, tabMark.getTranslationX(), 0f);
+                assertEquals((float) y, tabMark.getTranslationY(), 0f);
+                assertTrue(Math.abs(x) <= 2 && Math.abs(y) <= 2);
+                sawMovement |= x != 0 || y != 0;
+                assertEquals(x, bounds(a.tabGlyph).left - glyph.left);
+                assertEquals(y, bounds(a.tabGlyph).top - glyph.top);
+                assertEquals(x, bounds(a.tabCount).left - count.left);
+                assertEquals(y, bounds(a.tabCount).top - count.top);
+                assertEquals(x, -a.shellMark.getScrollX());
+                assertEquals(y, -a.shellMark.getScrollY());
+                assertEquals(x, -a.back.getScrollX());
+                assertEquals(y, -a.back.getScrollY());
+                assertEquals((float) x, a.downloadBadge.getTranslationX(), 0f);
+                assertEquals((float) y, a.downloadBadge.getTranslationY(), 0f);
+                assertTrue(download.contains(bounds(a.downloadBadge)));
+                assertEquals(tab, bounds(a.tabButton));
+                assertEquals(ws, bounds(a.shellMark));
+                assertEquals(back, bounds(a.back));
+                assertEquals(download, bounds(a.downloadsButton));
+              }
+              assertTrue("Marks stayed on the same pixels for the whole cycle", sawMovement);
+              assertTrue(tab.height() >= a.dp(48));
+              shift.update(0);
+              View menu = a.bottomBar.getChildAt(a.bottomBar.getChildCount() - 1);
+              Bitmap wsBefore = renderInParent(a.shellMark), menuBefore = renderInParent(menu);
+              a.tabButton.setPressed(true);
+              try {
+                shift.update(ChromePixelShift.INTERVAL_MS);
+                assertEquals("A held target moved", glyph, bounds(a.tabGlyph));
+                assertRenderedMarkChanged(a.shellMark, wsBefore);
+                assertRenderedMarkChanged(menu, menuBefore);
+              } finally {
+                a.tabButton.setPressed(false);
+                wsBefore.recycle();
+                menuBefore.recycle();
+              }
+              shift.update(ChromePixelShift.INTERVAL_MS);
+              return tab;
+            });
+
+    // Tap just inside the original cell, well outside the smaller, shifted glyph.
+    long downTime = SystemClock.uptimeMillis();
+    for (int action : new int[] {MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP}) {
+      MotionEvent event =
+          MotionEvent.obtain(
+              downTime,
+              SystemClock.uptimeMillis(),
+              action,
+              tabTarget.left + 1f,
+              tabTarget.exactCenterY(),
+              0);
+      try {
+        InstrumentationRegistry.getInstrumentation().sendPointerSync(event);
+      } finally {
+        event.recycle();
+      }
+    }
+    awaitSheet();
+    ui(
+        a -> {
+          assertNotNull(findText(sheetRoot(a), "标签页"));
+          return null;
+        });
+  }
+
+  private static Bitmap renderInParent(View view) {
+    // Drawing the parent reproduces ViewGroup's child scroll transform within the fixed hit box.
+    Bitmap bitmap = Bitmap.createBitmap(view.getWidth(), view.getHeight(), Bitmap.Config.ARGB_8888);
+    Canvas canvas = new Canvas(bitmap);
+    canvas.translate(-view.getLeft(), -view.getTop());
+    ((ViewGroup) view.getParent()).draw(canvas);
+    return bitmap;
+  }
+
+  @Test
+  public void continuousPageTapsStillShiftRenderedBrowserMarks() throws Exception {
+    await("Isolated browser window has no focus", () -> ui(a -> a.hasWindowFocus()));
+    View ws = ui(a -> a.shellMark);
+    View menu = ui(a -> a.bottomBar.getChildAt(a.bottomBar.getChildCount() - 1));
+    Rect wsTarget = ui(a -> bounds(ws)), menuTarget = ui(a -> bounds(menu));
+    // Keep the two starting crops on the same side of a minute boundary.
+    waitForStableCapture();
+    int initialX = ui(a -> menu.getScrollX()), initialY = ui(a -> menu.getScrollY());
+    boolean[] originalWs = windowInk(ws), originalMenu = windowInk(menu);
+    long started = SystemClock.uptimeMillis();
+    while (SystemClock.uptimeMillis() - started < ChromePixelShift.INTERVAL_MS + 1500) {
+      Rect surface =
+          ui(
+              a -> {
+                assertTrue(a.resumed && a.hasWindowFocus());
+                assertSame(document, a.current.web);
+                assertEquals(epoch, a.current.epoch);
+                assertEquals("WebSurf layout fixture", document.getTitle());
+                assertTrue(document.getUrl().startsWith(BASE + "/layout.html?acid="));
+                assertEquals(wsTarget, bounds(ws));
+                assertEquals(menuTarget, bounds(menu));
+                return bounds(document);
+              });
+      long down = SystemClock.uptimeMillis();
+      for (int action : new int[] {MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP}) {
+        MotionEvent event =
+            MotionEvent.obtain(
+                down,
+                SystemClock.uptimeMillis(),
+                action,
+                surface.exactCenterX(),
+                surface.exactCenterY(),
+                0);
+        try {
+          InstrumentationRegistry.getInstrumentation().sendPointerSync(event);
+        } finally {
+          event.recycle();
+        }
+      }
+      SystemClock.sleep(1600);
+    }
+    waitForStableCapture();
+    int dx = initialX - ui(a -> menu.getScrollX()), dy = initialY - ui(a -> menu.getScrollY());
+    assertTrue("No real timer transition during continuous page input", dx != 0 || dy != 0);
+    assertInkMoved(originalWs, windowInk(ws), wsTarget.width(), dx, dy);
+    assertInkMoved(originalMenu, windowInk(menu), menuTarget.width(), dx, dy);
+    assertEquals(wsTarget, ui(a -> bounds(ws)));
+    assertEquals(menuTarget, ui(a -> bounds(menu)));
+  }
+
+  private static void waitForStableCapture() {
+    long phaseTime = SystemClock.uptimeMillis() % ChromePixelShift.INTERVAL_MS;
+    long untilTick = ChromePixelShift.INTERVAL_MS - phaseTime;
+    if (untilTick < 500) SystemClock.sleep(untilTick + 120);
+    else if (phaseTime < 120) SystemClock.sleep(120 - phaseTime);
+  }
+
+  /** Copy only the control's final, composited pixels from this Activity window. */
+  private boolean[] windowInk(View control) throws Exception {
+    int width = control.getWidth(), height = control.getHeight();
+    Bitmap crop = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+    CountDownLatch copied = new CountDownLatch(1);
+    AtomicInteger status = new AtomicInteger(-1);
+    try {
+      ui(
+          a -> {
+            int[] at = new int[2];
+            control.getLocationInWindow(at);
+            Rect area = new Rect(at[0], at[1], at[0] + width, at[1] + height);
+            PixelCopy.request(
+                a.getWindow(),
+                area,
+                crop,
+                result -> {
+                  status.set(result);
+                  copied.countDown();
+                },
+                new Handler(Looper.getMainLooper()));
+            return null;
+          });
+      assertTrue("Window pixel copy timed out", copied.await(2, TimeUnit.SECONDS));
+      assertEquals(PixelCopy.SUCCESS, status.get());
+      int[] colors = new int[width * height];
+      crop.getPixels(colors, 0, width, 0, 0, width, height);
+      int background = colors[2 * width + 2];
+      boolean[] ink = new boolean[colors.length];
+      for (int i = 0; i < colors.length; i++) {
+        int c = colors[i];
+        ink[i] =
+            Math.abs(Color.red(c) - Color.red(background)) >= 48
+                || Math.abs(Color.green(c) - Color.green(background)) >= 48
+                || Math.abs(Color.blue(c) - Color.blue(background)) >= 48;
+      }
+      return ink;
+    } finally {
+      crop.recycle();
+    }
+  }
+
+  private static void assertInkMoved(boolean[] before, boolean[] after, int width, int dx, int dy) {
+    int ink = 0, matched = 0, stationary = 0;
+    for (int i = 0; i < before.length; i++) {
+      if (!before[i]) continue;
+      ink++;
+      if (after[i]) stationary++;
+      int x = i % width + dx, y = i / width + dy;
+      if (x >= 0 && x < width && y >= 0 && y < after.length / width && after[y * width + x])
+        matched++;
+    }
+    assertTrue("Could not isolate the symbol in the hardware crop", ink >= 12);
+    assertTrue(
+        "Symbol pixels did not follow the timer offset",
+        matched > stationary && matched >= ink * .9);
+  }
+
+  private static void assertRenderedMarkChanged(View control, Bitmap before) {
+    Bitmap after = renderInParent(control);
+    try {
+      assertFalse(
+          "Ink stayed on identical pixels: " + control.getContentDescription(),
+          before.sameAs(after));
+    } finally {
+      after.recycle();
+    }
   }
 
   private void seedResources() throws Exception {
