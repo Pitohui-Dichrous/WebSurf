@@ -115,19 +115,14 @@ public class BrowserPolicyTest {
   }
 
   @Test
-  public void cachedFirstPartyMediaCannotGainNewCookiesOrSurviveACrossSiteVisit() {
-    BrowserTab tab = new BrowserTab();
-    String target = "https://example.test/private/video.mp4?sig=fixture";
-    tab.rememberMediaCookie(target, "login=old; session=ok");
-    tab.beginDocument("https://example.test/next");
+  public void registeredVideoSourceCanLoseCookiesButCannotGainNewPairs() {
+    VideoTarget source = new VideoTarget();
+    source.sourceCookies = "login=old; session=ok";
     assertEquals(
-        "login=old; session=ok", tab.cachedMediaCookie(target, "session=ok; login=old; other=new"));
-    assertEquals("session=ok", tab.cachedMediaCookie(target, "session=ok; login=new"));
-    assertEquals("", tab.cachedMediaCookie(target, null));
-    assertEquals("", tab.cachedMediaCookie(target + "2", "session=ok"));
-    tab.beginDocument("https://other.test/embed");
-    tab.beginDocument("https://example.test/back");
-    assertEquals("", tab.cachedMediaCookie(target, "login=old; session=ok"));
+        "login=old; session=ok", source.remainingSourceCookies("session=ok; login=old; other=new"));
+    assertEquals("session=ok", source.remainingSourceCookies("session=ok; login=new"));
+    assertEquals("", source.remainingSourceCookies(null));
+    assertEquals("", new VideoTarget().remainingSourceCookies("login=old; session=ok"));
   }
 
   @Test

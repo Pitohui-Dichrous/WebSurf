@@ -328,12 +328,18 @@ public class DownloadEngineInstrumentedTest {
         .getJSONObject("headers")
         .put(NativeMediaHttp.LOCAL_ORIGIN.toLowerCase(java.util.Locale.ROOT), server.base() + "/");
     legacy.remove("browserScopedHeaders");
+    legacy.remove("mediaScopedCookies");
     DownloadStore.Job migrated = DownloadStore.Job.from(legacy);
     assertEquals(job.id, migrated.id);
     assertEquals(job.url, migrated.url);
     assertEquals(job.state, migrated.state);
     assertEquals(Map.of("User-Agent", "WebSurf-test"), migrated.headers);
     legacy.put("browserScopedHeaders", true);
+    DownloadStore.Job previewJob = DownloadStore.Job.from(legacy);
+    assertFalse(previewJob.headers.keySet().stream().anyMatch("Cookie"::equalsIgnoreCase));
+    assertFalse(
+        DownloadStore.Job.from(previewJob.json()).headers.keySet().stream()
+            .anyMatch("Cookie"::equalsIgnoreCase));
     assertFalse(
         DownloadStore.Job.from(legacy).headers.keySet().stream()
             .anyMatch(NativeMediaHttp.LOCAL_ORIGIN::equalsIgnoreCase));

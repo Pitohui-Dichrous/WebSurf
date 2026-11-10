@@ -7,13 +7,16 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
+import java.net.HttpURLConnection;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import org.json.JSONArray;
 
 /** Shared input checks for the on-device HTTP test responders. */
 public final class FixtureHttp {
@@ -21,6 +24,18 @@ public final class FixtureHttp {
   private static final Pattern RANGE = Pattern.compile("bytes=([0-9]+)-([0-9]*)");
 
   private FixtureHttp() {}
+
+  static JSONArray requests(String base) throws Exception {
+    HttpURLConnection connection =
+        (HttpURLConnection) new URL(base + "/api/requests").openConnection();
+    connection.setConnectTimeout(3000);
+    connection.setReadTimeout(5000);
+    try (var input = connection.getInputStream()) {
+      return new JSONArray(new String(input.readAllBytes(), StandardCharsets.UTF_8));
+    } finally {
+      connection.disconnect();
+    }
+  }
 
   static ActivityScenario<MainActivity> launchHomepage(Context context, String url) {
     SharedPreferences prefs = context.getSharedPreferences("browser", Context.MODE_PRIVATE);

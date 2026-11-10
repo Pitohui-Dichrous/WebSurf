@@ -29,6 +29,25 @@ import org.junit.runner.RunWith;
 @RunWith(AndroidJUnit4.class)
 public final class BrowserSecurityTest {
   @Test
+  public void frameProjectionKeepsCookieGrantOnlyForTheLiveMediaSource() throws Exception {
+    JSONObject layout =
+        new JSONObject().put("documentId", "child").put("mediaId", "1").put("sourceVersion", 2);
+    VideoTarget source =
+        VideoTarget.read(new JSONObject(layout.toString()).put("url", "https://media.test/v"), null);
+    source.sourceCookies = "session=fixture";
+    assertEquals("session=fixture", VideoTarget.read(layout, source).sourceCookies);
+    assertEquals("", VideoTarget.read(layout, null).sourceCookies);
+    for (JSONObject changed :
+        List.of(
+            new JSONObject(layout.toString()).put("url", "https://media.test/next"),
+            new JSONObject(layout.toString()).put("sourceVersion", 3),
+            new JSONObject(layout.toString()).put("mediaId", "2"),
+            new JSONObject(layout.toString()).put("documentId", "other"))) {
+      assertEquals("", VideoTarget.read(changed, source).sourceCookies);
+    }
+  }
+
+  @Test
   public void missedFrameUnloadsCanReclaimAnIdleSlotAtCapacity() throws Exception {
     BrowserTab tab = new BrowserTab();
     for (int i = 0; i < 100; i++) {

@@ -756,7 +756,8 @@ public class MainActivity extends Activity {
               String url = request.getUrl().toString();
               Map<String, String> headers = new LinkedHashMap<>(request.getRequestHeaders());
               long epoch = tab.epoch;
-              if (request.isForMainFrame())
+              boolean navigation = request.isForMainFrame();
+              if (navigation)
                 tab.navigationRequest.set(
                     new BrowserTab.NavigationRequest(epoch, url, Map.copyOf(headers)));
               handler.post(
@@ -780,7 +781,7 @@ public class MainActivity extends Activity {
                             0,
                             0,
                             epoch == 0 ? tab.initialPage : tab.url);
-                    if (resource != null) captureRequestHeaders(resource, headers);
+                    if (resource != null) captureRequestHeaders(resource, headers, navigation);
                   });
             }
             return null;
@@ -1013,6 +1014,12 @@ public class MainActivity extends Activity {
       return;
     }
     VideoTarget target = VideoTarget.read(event, previous);
+    if (!target.sameSourceAs(previous) && firstPartySource(tab, target)) {
+      // HTML media uses first-party credentials for this source. Record its maximum cookie
+      // scope once at registration. A later anonymous fetch to this URL cannot widen it.
+      String cookie = CookieManager.getInstance().getCookie(target.url);
+      if (cookie != null && cookie.length() <= 8192) target.sourceCookies = cookie;
+    }
     if (!tab.retainVideo(
         key, target, tab == playerTab && activeTarget != null ? activeTarget.key() : "")) return;
     WebResource resource =
@@ -1249,9 +1256,10 @@ public class MainActivity extends Activity {
   }
 
   private void captureRequestHeaders(
-      WebResource resource, Map<String, String> headers, boolean attachment) {
+      WebResource resource, Map<String, String> headers, boolean navigation) {
     resource.requestHeadersCaptured = true;
-    resource.requestDestination = attachment ? "document" : "";
+    resource.navigationRequest = navigation;
+    resource.requestDestination = navigation ? "document" : "";
     // Absence is meaningful: no-referrer/same-origin must not acquire an invented Referer.
     resource
         .headers
@@ -1265,7 +1273,7 @@ public class MainActivity extends Activity {
                     || name.equalsIgnoreCase("Authorization"));
     for (Map.Entry<String, String> entry : headers.entrySet()) {
       String name = entry.getKey();
-      if (!attachment && name.equalsIgnoreCase("Sec-Fetch-Dest"))
+      if (!navigation && name.equalsIgnoreCase("Sec-Fetch-Dest"))
         resource.requestDestination = entry.getValue();
       if (name.equalsIgnoreCase("Cookie")
           || name.equalsIgnoreCase("Referer")
@@ -1302,40 +1310,44 @@ public class MainActivity extends Activity {
             && current.resources.get(r.url) == r
             && MediaRequestPolicy.sameOrigin(current.web.getUrl(), r.url)
             && MediaRequestPolicy.sameOrigin(r.pageUrl, r.url);
-    if (!firstParty || !r.requestHeadersCaptured)
-      h.keySet()
-          .removeIf(
-              name -> name.equalsIgnoreCase("Cookie") || name.equalsIgnoreCase("Authorization"));
-    if (firstParty
-        && (r.requestDestination.isEmpty() || "video".equalsIgnoreCase(r.requestDestination))) {
-      for (VideoTarget video : current.videos.values()) {
-        BrowserTab.Frame owner = current.documents.get(video.documentId);
-        if (owner == null
-            || !owner.firstPartyTree
-            || !video.url.equals(r.url)
-            || !MediaRequestPolicy.sameOrigin(owner.origin, r.url)) continue;
-        if (r.requestHeadersCaptured) {
-          // Legacy providers hide first-party HTML video cookies from shouldInterceptRequest.
-          if (!supportsCookieIntercept()) {
-            String cookie = CookieManager.getInstance().getCookie(r.url);
-            if (cookie != null && !cookie.isBlank()) h.put("Cookie", cookie);
-          }
-          String captured =
-              h.entrySet().stream()
-                  .filter(e -> e.getKey().equalsIgnoreCase("Cookie"))
-                  .map(Map.Entry::getValue)
-                  .findFirst()
-                  .orElse("");
-          current.rememberMediaCookie(r.url, captured);
-        } else if (video.width > 0 && video.height > 0 && current.hasMediaCookie(r.url)) {
-          String cookie =
-              current.cachedMediaCookie(r.url, CookieManager.getInstance().getCookie(r.url));
-          if (!cookie.isEmpty()) h.put("Cookie", cookie);
-        }
-        break;
-      }
+    // WebView can attach a Cookie to the intercept callback even for fetch(credentials:'omit').
+    // An unknown fetch destination is insufficient evidence, including for a known video URL.
+    if (!firstParty || !r.requestHeadersCaptured) {
+      h.keySet().removeIf(k -> k.equalsIgnoreCase("Cookie") || k.equalsIgnoreCase("Authorization"));
+    } else if (!r.navigationRequest
+        && !("video".equalsIgnoreCase(r.requestDestination)
+            && current.videos.values().stream()
+                .anyMatch(v -> v.url.equals(r.url) && firstPartySource(current, v)))) {
+      h.keySet().removeIf("Cookie"::equalsIgnoreCase);
     }
     return h;
+  }
+
+  private boolean firstPartySource(BrowserTab tab, VideoTarget target) {
+    BrowserTab.Frame owner = tab.documents.get(target.documentId);
+    return owner != null
+        && owner.firstPartyTree
+        && MediaRequestPolicy.sameOrigin(owner.origin, target.url)
+        && MediaRequestPolicy.sameOrigin(tab.web.getUrl(), target.url);
+  }
+
+  Map<String, String> playbackHeadersFor(WebResource r, VideoTarget target) {
+    Map<String, String> headers = mediaHeadersFor(r);
+    if (target == null || current == null || r.frozenDownloadHeaders) return headers;
+    // The selected HTML source is a separate operation from previewing a sniffed request.
+    // A live document, element and source generation must all match the original grant.
+    headers.keySet().removeIf("Cookie"::equalsIgnoreCase);
+    VideoTarget live = current.videos.get(target.key());
+    if (current.resources.get(r.url) == r
+        && live != null
+        && live.sameSourceAs(target)
+        && live.url.equals(r.url)
+        && firstPartySource(current, live)
+        && !live.sourceCookies.isEmpty()) {
+      String cookie = live.remainingSourceCookies(CookieManager.getInstance().getCookie(r.url));
+      if (!cookie.isEmpty()) headers.put("Cookie", cookie);
+    }
+    return headers;
   }
 
   Map<String, String> mediaHeadersFor(WebResource r) {
@@ -1528,7 +1540,7 @@ public class MainActivity extends Activity {
           new androidx.media3.exoplayer.source.ProgressiveMediaSource.Factory(
               () -> new androidx.media3.datasource.ContentDataSource(this));
     } else {
-      Map<String, String> headers = mediaHeadersFor(resource);
+      Map<String, String> headers = playbackHeadersFor(resource, target);
       var network = MediaTransferCache.remotePlayback(this, resource.url, headers);
       boolean hls =
           resource.isHls()
@@ -1564,7 +1576,7 @@ public class MainActivity extends Activity {
 
               @Override
               public void onDownload() {
-                if (playing != null) confirmDownload(playing);
+                if (playing != null) confirmDownload(playing, activeTarget);
               }
 
               @Override
@@ -2322,6 +2334,10 @@ public class MainActivity extends Activity {
   }
 
   void confirmDownload(WebResource r) {
+    confirmDownload(r, null);
+  }
+
+  private void confirmDownload(WebResource r, VideoTarget target) {
     for (DownloadStore.Job existing : DownloadStore.list(this))
       if (existing.active() && existing.url.equals(r.url)) {
         showDownloadFeedback("正在下载", existing);
@@ -2346,7 +2362,8 @@ public class MainActivity extends Activity {
               }
               try {
                 String id =
-                    DownloadService.enqueue(this, r.url, downloadTitle, mediaHeadersFor(r), r.mime);
+                    DownloadService.enqueue(
+                        this, r.url, downloadTitle, playbackHeadersFor(r, target), r.mime);
                 DownloadStore.Job job = DownloadStore.get(this, id);
                 if (job != null) {
                   downloadStates.put(id, job.state);

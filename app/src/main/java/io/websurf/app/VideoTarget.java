@@ -33,7 +33,7 @@ final class VideoTarget {
   float topScrollX, topScrollY, visualOffsetX, visualOffsetY;
   boolean nativeScrollFollow = true;
   long layoutRevision;
-  String poster = "";
+  String poster = "", sourceCookies = "";
   boolean nativeFailed;
   List<QualitySource> qualitySources = List.of();
 
@@ -47,6 +47,18 @@ final class VideoTarget {
     return documentId + ":" + mediaId;
   }
 
+  boolean sameSourceAs(VideoTarget other) {
+    return other != null
+        && sourceVersion == other.sourceVersion
+        && documentId.equals(other.documentId)
+        && mediaId.equals(other.mediaId)
+        && url.equals(other.url);
+  }
+
+  String remainingSourceCookies(String current) {
+    return MediaRequestPolicy.remainingCookiePairs(sourceCookies, current);
+  }
+
   int retainedCharacters() {
     int size =
         documentId.length()
@@ -54,7 +66,8 @@ final class VideoTarget {
             + url.length()
             + page.length()
             + title.length()
-            + poster.length();
+            + poster.length()
+            + sourceCookies.length();
     for (QualitySource q : qualitySources)
       size += q.url().length() + q.mime().length() + q.label().length();
     return size;
@@ -66,6 +79,7 @@ final class VideoTarget {
     t.mediaId = e.optString("mediaId");
     t.sourceVersion = e.optLong("sourceVersion", 0);
     t.url = e.optString("url", previous == null ? "" : previous.url);
+    if (t.sameSourceAs(previous)) t.sourceCookies = previous.sourceCookies;
     t.page = e.optString("page", previous == null ? "" : previous.page);
     t.title = e.optString("title", previous == null ? "网页视频" : previous.title);
     t.time = e.optDouble("time", previous == null ? 0 : previous.time);

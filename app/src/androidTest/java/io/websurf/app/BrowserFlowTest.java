@@ -119,6 +119,20 @@ public final class BrowserFlowTest {
                     }));
       }
       await(
+          "Fixture did not see both authenticated and anonymous browser requests",
+          7000,
+          () -> {
+            var entries = FixtureHttp.requests(BASE);
+            boolean included = false, omitted = false;
+            for (int i = 0; i < entries.length(); i++) {
+              var entry = entries.getJSONObject(i);
+              String path = entry.getString("path");
+              if (path.equals(suffix + "-include")) included = entry.getBoolean("cookiePresent");
+              if (path.equals(suffix + "-omit")) omitted = !entry.getBoolean("cookiePresent");
+            }
+            return included && omitted;
+          });
+      await(
           "Native bridge did not bind the first-party HTML video",
           7000,
           () ->
@@ -140,23 +154,36 @@ public final class BrowserFlowTest {
                         .orElse("");
             assertEquals("", cookie.apply(omit));
             assertEquals("", cookie.apply(cross));
-            assertEquals(
-                MainActivity.supportsCookieIntercept(),
-                cookie.apply(include).contains("websurf_fixture=ready"));
+            // Some providers expose the same intercept-time cookie for both fetch modes.
+            assertEquals("", cookie.apply(include));
+            WebResource video = a.current.resources.get(media);
+            VideoTarget target =
+                a.current.videos.values().stream().filter(v -> media.equals(v.url)).findFirst().get();
             assertTrue(
-                "Live first-party HTML media lost its session; request destination="
-                    + a.current.resources.get(media).requestDestination
-                    + ", top matches="
-                    + MediaRequestPolicy.sameOrigin(a.current.web.getUrl(), media)
-                    + ", owner matches="
-                    + a.current.videos.values().stream()
-                        .filter(v -> v.url.equals(media))
-                        .anyMatch(v -> a.current.documents.get(v.documentId).firstPartyTree),
-                cookie.apply(media).contains("websurf_fixture=ready"));
+                "Selected first-party video lost its session; video destination=["
+                    + video.requestDestination + "], fetch destination=["
+                    + a.current.resources.get(omit).requestDestination + "]",
+                a.playbackHeadersFor(video, target)
+                    .getOrDefault("Cookie", "")
+                    .contains("websurf_fixture=ready"));
+            // Reuse the exact decoded URL after its source registration and rotate a cookie.
+            // Exercise a provider with no fetch destination and one exposing the literal "empty".
+            jar.setCookie(media, "websurf_later=after; Path=/");
+            for (String destination : List.of("", "empty")) {
+              var ambiguous = new java.util.HashMap<String, String>();
+              ambiguous.put("Cookie", "websurf_fixture=ready; websurf_later=after");
+              if (!destination.isEmpty()) ambiguous.put("Sec-Fetch-Dest", destination);
+              a.captureRequestHeaders(video, ambiguous);
+              assertTrue(cookie.apply(media).isEmpty());
+              String authorized = a.playbackHeadersFor(video, target).getOrDefault("Cookie", "");
+              assertTrue(authorized.contains("websurf_fixture=ready"));
+              assertFalse(authorized.contains("websurf_later="));
+            }
             return null;
           });
     } finally {
       jar.setCookie(cross, "websurf_other=; Max-Age=0; Path=/");
+      jar.setCookie(media, "websurf_later=; Max-Age=0; Path=/");
     }
   }
 

@@ -102,29 +102,9 @@ final class BrowserTab {
     }
   }
 
-  // WebView can serve a previously decoded first-party video from its media cache without
-  // another intercept callback. Keep only the exact URLs and pairs this tab already authorized.
-  private final LinkedHashMap<String, String> mediaCookies = new LinkedHashMap<>();
-
   void beginDocument(String page) {
     restrictPendingAddress(page);
     if (!localDocument(page)) localOrigin = "";
-    mediaCookies.keySet().removeIf(url -> !MediaRequestPolicy.sameOrigin(page, url));
-  }
-
-  void rememberMediaCookie(String url, String cookie) {
-    mediaCookies.remove(url);
-    if (cookie == null || cookie.isBlank() || cookie.length() > 8192) return;
-    if (mediaCookies.size() >= 8) mediaCookies.remove(mediaCookies.keySet().iterator().next());
-    mediaCookies.put(url, cookie);
-  }
-
-  String cachedMediaCookie(String url, String currentCookie) {
-    return MediaRequestPolicy.remainingCookiePairs(mediaCookies.get(url), currentCookie);
-  }
-
-  boolean hasMediaCookie(String url) {
-    return mediaCookies.containsKey(url);
   }
 
   boolean makeDocumentRoom(String playingDocument) {

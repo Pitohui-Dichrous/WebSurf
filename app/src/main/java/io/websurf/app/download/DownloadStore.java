@@ -77,6 +77,7 @@ public final class DownloadStore {
             .put("completedParts", completedParts)
             .put("totalParts", totalParts)
             .put("browserScopedHeaders", true)
+            .put("mediaScopedCookies", true)
             .put("headers", requestHeaders);
       } catch (org.json.JSONException e) {
         throw new IllegalStateException(e);
@@ -109,6 +110,8 @@ public final class DownloadStore {
         while (keys.hasNext()) {
           String k = keys.next();
           if (NativeMediaHttp.LOCAL_ORIGIN.equalsIgnoreCase(k)) continue;
+          // Earlier versions could capture a cookie from an anonymous WebView fetch.
+          if (k.equalsIgnoreCase("Cookie") && !o.optBoolean("mediaScopedCookies")) continue;
           if (!o.optBoolean("browserScopedHeaders")
               && (k.equalsIgnoreCase("Cookie")
                   || k.equalsIgnoreCase("Authorization")

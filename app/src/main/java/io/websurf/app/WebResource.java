@@ -10,6 +10,7 @@ public final class WebResource {
   public final String url;
   public boolean frozenDownloadHeaders;
   public boolean requestHeadersCaptured;
+  boolean navigationRequest;
   boolean fromLocalDocument;
   boolean httpsPreviewContext;
 
