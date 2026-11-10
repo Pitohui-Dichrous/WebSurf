@@ -22,7 +22,35 @@ public final class WebResource {
 
   String requestDestination = "";
   Runnable onRequestCaptured;
-  public String referrerPolicy = "";
+  DocumentReferrer documentReferrer, capturedDocument;
+
+  record DocumentReferrer(
+      String documentId, String origin, String page, boolean main, String policy) {
+    DocumentReferrer {
+      if (policy.length() > 64) policy = "";
+    }
+
+    boolean sameDocument(DocumentReferrer other) {
+      return documentId.equals(other.documentId)
+          && origin.equals(other.origin)
+          && page.equals(other.page);
+    }
+
+    boolean matchesHeader(String name, String value) {
+      if (name.equalsIgnoreCase("Referer"))
+        return value.equals(ReferrerPolicy.forRequest(page, page, "unsafe-url"))
+            || value.equals(ReferrerPolicy.forRequest(origin, origin, "origin"));
+      if (name.equalsIgnoreCase("Origin"))
+        return "null".equals(value) || MediaRequestPolicy.sameOrigin(origin, value);
+      return true;
+    }
+
+    String forRequest(String target) {
+      String source = main ? page : ReferrerPolicy.forRequest(origin, origin, "origin");
+      return ReferrerPolicy.forRequest(source, target, policy);
+    }
+  }
+
   public final String transferScope = java.util.UUID.randomUUID().toString();
   public String mime = "", kind = "其他", source = "网络请求", title = "", pageUrl = "";
 

@@ -34,6 +34,7 @@ final class VideoTarget {
   boolean nativeScrollFollow = true;
   long layoutRevision;
   String poster = "", sourceCookies = "";
+  WebResource.DocumentReferrer documentReferrer;
   boolean nativeFailed;
   List<QualitySource> qualitySources = List.of();
 
@@ -68,6 +69,8 @@ final class VideoTarget {
             + title.length()
             + poster.length()
             + sourceCookies.length();
+    if (documentReferrer != null)
+      size += documentReferrer.page().length() + documentReferrer.policy().length();
     for (QualitySource q : qualitySources)
       size += q.url().length() + q.mime().length() + q.label().length();
     return size;
@@ -79,7 +82,10 @@ final class VideoTarget {
     t.mediaId = e.optString("mediaId");
     t.sourceVersion = e.optLong("sourceVersion", 0);
     t.url = e.optString("url", previous == null ? "" : previous.url);
-    if (t.sameSourceAs(previous)) t.sourceCookies = previous.sourceCookies;
+    if (t.sameSourceAs(previous)) {
+      t.sourceCookies = previous.sourceCookies;
+      t.documentReferrer = previous.documentReferrer;
+    }
     t.page = e.optString("page", previous == null ? "" : previous.page);
     t.title = e.optString("title", previous == null ? "网页视频" : previous.title);
     t.time = e.optDouble("time", previous == null ? 0 : previous.time);
@@ -150,12 +156,15 @@ final class VideoTarget {
 
   private static RectF rectangle(JSONObject o) {
     if (o == null) return new RectF();
-    float x = (float) o.optDouble("left", o.optDouble("x", 0));
-    float y = (float) o.optDouble("top", o.optDouble("y", 0));
-    return new RectF(
-        x,
-        y,
-        (float) o.optDouble("right", x + o.optDouble("width", 0)),
-        (float) o.optDouble("bottom", y + o.optDouble("height", 0)));
+    double x = o.optDouble("left", o.optDouble("x", 0));
+    double y = o.optDouble("top", o.optDouble("y", 0));
+    double right = o.optDouble("right", x + o.optDouble("width", 0));
+    double bottom = o.optDouble("bottom", y + o.optDouble("height", 0));
+    // Preserve offscreen elements on long pages, but reject impossible CSS coordinates
+    // before narrowing to float. The native view separately bounds actual pixel dimensions.
+    double limit = 1 << 27;
+    if (!(x >= -limit && y >= -limit && right <= limit && bottom <= limit
+        && x < right && y < bottom)) return new RectF();
+    return new RectF((float) x, (float) y, (float) right, (float) bottom);
   }
 }

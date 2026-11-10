@@ -136,6 +136,46 @@ public class DownloadEngineInstrumentedTest {
   }
 
   @Test
+  public void oversizedChunkedByteRangeAbortsBeforeEofOnEveryAttempt() throws Exception {
+    server.files.put("/overlong.ts", new byte[] {42});
+    server.files.put(
+        "/overlong.m3u8",
+        ("#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1,\n#EXT-X-BYTERANGE:1@0\n"
+                + "overlong.ts\n#EXT-X-ENDLIST\n")
+            .getBytes(StandardCharsets.UTF_8));
+    DownloadStore.Job job = job("/overlong.m3u8");
+    try {
+      new DownloadEngine(context, job, current -> {}).run();
+      fail("Expected range rejection");
+    } catch (java.io.IOException expected) {
+      assertTrue(expected.toString(), expected.getMessage().contains("超过请求范围"));
+    }
+    assertEquals(3, java.util.Collections.frequency(server.requests, "/overlong.ts"));
+    assertEquals(0, job.bytes);
+    assertEquals(0, job.completedParts);
+    assertEquals("", job.outputUri);
+    assertFalse(new java.io.File(context.getCacheDir(), "downloads/" + job.id).exists());
+  }
+
+  @Test
+  public void exactChunkedEncryptedByteRangesExportCompleteMp4() throws Exception {
+    String playlist = new String(server.files.get("/aes.m3u8"), StandardCharsets.UTF_8);
+    long encryptedBytes = 0;
+    for (Map.Entry<String, byte[]> entry : server.files.entrySet()) {
+      if (entry.getKey().startsWith("/enc-segment")) {
+        String name = entry.getKey().substring(1);
+        int length = entry.getValue().length;
+        playlist = playlist.replace(name, "#EXT-X-BYTERANGE:" + length + "@0\n" + name);
+        encryptedBytes += length;
+      }
+    }
+    server.files.put("/aes-ranges.m3u8", playlist.getBytes(StandardCharsets.UTF_8));
+    DownloadStore.Job job = download("/aes-ranges.m3u8");
+    assertMp4(job, true);
+    assertEquals(encryptedBytes, job.bytes);
+  }
+
+  @Test
   public void pdfFilenameAndBytesArePreserved() throws Exception {
     DownloadStore.Job job = download("/document");
     assertEquals("测试文档.pdf", job.fileName);
@@ -928,6 +968,22 @@ public class DownloadEngineInstrumentedTest {
                   + "/"
                   + body.length
                   + "\r\n";
+          if (path.equals("/overlong.ts") || path.startsWith("/enc-segment")) {
+            out.write(
+                (response + "Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+                        + Integer.toHexString(slice.length()) + "\r\n")
+                    .getBytes(StandardCharsets.US_ASCII));
+            out.write(body, slice.start(), slice.length());
+            if (path.equals("/overlong.ts")) {
+              out.write("\r\n1\r\n!\r\n".getBytes(StandardCharsets.US_ASCII));
+              out.flush();
+              reader.read(); // Withhold the final chunk until the client disconnects.
+            } else {
+              out.write("\r\n0\r\n\r\n".getBytes(StandardCharsets.US_ASCII));
+              out.flush();
+            }
+            return;
+          }
         }
         String type =
             path.endsWith(".m3u8")

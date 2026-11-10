@@ -646,7 +646,8 @@ public class MainActivity extends Activity {
                 return;
               }
               // The callback supplies the sending origin; a subframe cannot name the top document.
-              if (!matchesFramePage(frame.origin, event.optString("page"), isMain)) return;
+              String framePage = event.optString("page");
+              if (!matchesFramePage(frame.origin, framePage, isMain)) return;
               if (!isMain) {
                 event.put("page", frame.origin + "/");
                 for (String field : VideoTarget.LAYOUT_FIELDS) event.remove(field);
@@ -665,7 +666,15 @@ public class MainActivity extends Activity {
                     || SystemClock.uptimeMillis() - tab.inputAt >= 1800) return;
                 tab.consumedInput = tab.inputSequence;
               }
-              onObservation(tab, event);
+              onObservation(
+                  tab,
+                  event,
+                  new WebResource.DocumentReferrer(
+                      document,
+                      frame.origin,
+                      requiredPrefix != null ? framePage : event.optString("page"),
+                      isMain,
+                      event.optString("referrerPolicy")));
             } catch (Exception ignored) {
             }
           });
@@ -777,10 +786,10 @@ public class MainActivity extends Activity {
                             url,
                             "",
                             "网络请求",
-                            headers,
                             0,
                             0,
-                            epoch == 0 ? tab.initialPage : tab.url);
+                            epoch == 0 ? tab.initialPage : tab.url,
+                            null);
                     if (resource != null) captureRequestHeaders(resource, headers, navigation);
                   });
             }
@@ -879,11 +888,13 @@ public class MainActivity extends Activity {
     w.setDownloadListener(
         (uri, ua, disposition, mime, length) -> {
           WebResource resource =
-              observe(tab, uri, mime, "下载链接", Collections.emptyMap(), 0, 0, tab.url);
+              observe(tab, uri, mime, "下载链接", 0, 0, tab.url, null);
           if (resource != null) {
             // WebView does not expose the final GET of an attachment redirect. It must not
             // inherit an earlier URL's Cookie or acquire a previously absent Referer.
             BrowserTab.NavigationRequest request = tab.navigationRequest.getAndSet(null);
+            resource.documentReferrer = null;
+            resource.pageUrl = tab.url;
             if (request != null
                 && request.epoch() == tab.epoch
                 && tab.localDocument(uri)
@@ -966,13 +977,14 @@ public class MainActivity extends Activity {
     }
   }
 
-  void onObservation(BrowserTab tab, JSONObject event) {
+  private void onObservation(
+      BrowserTab tab, JSONObject event, WebResource.DocumentReferrer referrer) {
     String type = event.optString("type"),
         url = event.optString("url"),
         page = event.optString("page");
     boolean local = tab.localDocument(url) && tab.localDocument(tab.url);
     if (local) {
-      BrowserTab.Frame sender = tab.documents.get(event.optString("documentId"));
+      BrowserTab.Frame sender = tab.documents.get(referrer.documentId());
       // A foreign embed cannot substitute metadata (such as artwork) for an authorized LAN item.
       if (sender == null
           || !(sender.main || sender.firstPartyTree)
@@ -985,15 +997,13 @@ public class MainActivity extends Activity {
               url,
               event.optString("mime"),
               event.optString("source", "网页媒体"),
-              Collections.emptyMap(),
               event.optInt("width"),
               event.optInt("height"),
-              page);
+              page,
+              referrer);
       if (found != null && local) found.fromLocalDocument = true;
       if (found != null && found.previewIdentity.isEmpty() && event.has("poster"))
         updatePoster(found, event.optString("poster"));
-      if (found != null && event.has("referrerPolicy"))
-        found.referrerPolicy = event.optString("referrerPolicy");
       return;
     }
     if (!event.optString("mediaId").matches("[0-9]{1,16}") || !event.optBoolean("video", true))
@@ -1014,6 +1024,7 @@ public class MainActivity extends Activity {
       return;
     }
     VideoTarget target = VideoTarget.read(event, previous);
+    target.documentReferrer = referrer;
     if (!target.sameSourceAs(previous) && firstPartySource(tab, target)) {
       // HTML media uses first-party credentials for this source. Record its maximum cookie
       // scope once at registration. A later anonymous fetch to this URL cannot widen it.
@@ -1024,7 +1035,7 @@ public class MainActivity extends Activity {
         key, target, tab == playerTab && activeTarget != null ? activeTarget.key() : "")) return;
     WebResource resource =
         observe(
-            tab, url, "video/*", "网页视频", Collections.emptyMap(), target.width, target.height, page);
+            tab, url, "video/*", "网页视频", target.width, target.height, page, referrer);
     if (resource != null && local) resource.fromLocalDocument = true;
     bindVideoResource(tab, target, resource, "takeover".equals(type));
     if (active
@@ -1124,15 +1135,15 @@ public class MainActivity extends Activity {
     if (tab == current) updateResourceBar();
   }
 
-  WebResource observe(
+  private WebResource observe(
       BrowserTab tab,
       String url,
       String mime,
       String source,
-      Map<String, String> headers,
       int width,
       int height,
-      String page) {
+      String page,
+      WebResource.DocumentReferrer referrer) {
     if (!WebResource.isHttp(url)) return null;
     WebResource r = tab.resources.get(url);
     if (r == null) {
@@ -1153,7 +1164,8 @@ public class MainActivity extends Activity {
     r.classify();
     r.source = source;
     r.seenAt = System.currentTimeMillis();
-    r.pageUrl = page;
+    if (referrer != null) r.documentReferrer = referrer;
+    if (referrer != null || r.documentReferrer == null) r.pageUrl = page;
     r.notePreviewContext(tab.url);
     // For bridge observations the callback already validated this page against the WebKit
     // sender's origin, including the inherited origin of about:srcdoc.
@@ -1166,13 +1178,6 @@ public class MainActivity extends Activity {
       r.width = player.getVideoSize().width;
       r.height = player.getVideoSize().height;
       r.qualitySource = "播放画面";
-    }
-    for (Map.Entry<String, String> e : headers.entrySet()) {
-      String key = e.getKey();
-      if (key.equalsIgnoreCase("User-Agent")
-          || key.equalsIgnoreCase("Referer")
-          || key.equalsIgnoreCase("Origin")
-          || key.equalsIgnoreCase("Authorization")) r.headers.put(key, e.getValue());
     }
     if (tab == current) updateResourceBar();
     return r;
@@ -1260,6 +1265,7 @@ public class MainActivity extends Activity {
     resource.requestHeadersCaptured = true;
     resource.navigationRequest = navigation;
     resource.requestDestination = navigation ? "document" : "";
+    resource.capturedDocument = resource.documentReferrer;
     // Absence is meaningful: no-referrer/same-origin must not acquire an invented Referer.
     resource
         .headers
@@ -1273,6 +1279,9 @@ public class MainActivity extends Activity {
                     || name.equalsIgnoreCase("Authorization"));
     for (Map.Entry<String, String> entry : headers.entrySet()) {
       String name = entry.getKey();
+      if (resource.capturedDocument != null
+          && !resource.capturedDocument.matchesHeader(name, entry.getValue()))
+        resource.capturedDocument = null;
       if (!navigation && name.equalsIgnoreCase("Sec-Fetch-Dest"))
         resource.requestDestination = entry.getValue();
       if (name.equalsIgnoreCase("Cookie")
@@ -1290,6 +1299,16 @@ public class MainActivity extends Activity {
   }
 
   Map<String, String> headersFor(WebResource r) {
+    return headersFor(r, r.documentReferrer);
+  }
+
+  private static void removeDocumentHeaders(Map<String, String> headers) {
+    headers.keySet().removeIf(name -> name.equalsIgnoreCase("Referer")
+        || name.equalsIgnoreCase("Origin") || name.equalsIgnoreCase("Cookie")
+        || name.equalsIgnoreCase("Authorization"));
+  }
+
+  private Map<String, String> headersFor(WebResource r, WebResource.DocumentReferrer document) {
     Map<String, String> h = new LinkedHashMap<>(r.headers);
     if (r.frozenDownloadHeaders) return h;
     if (r.fromLocalDocument
@@ -1300,16 +1319,23 @@ public class MainActivity extends Activity {
     if (current != null
         && h.keySet().stream().noneMatch(name -> name.equalsIgnoreCase("User-Agent")))
       h.put("User-Agent", current.web.getSettings().getUserAgentString());
-    if (!r.requestHeadersCaptured
-        && h.keySet().stream().noneMatch(name -> name.equalsIgnoreCase("Referer"))) {
-      String referrer = ReferrerPolicy.forRequest(r.pageUrl, r.url, r.referrerPolicy);
+    if (document != null && r.requestHeadersCaptured) {
+      // WebView supplies the URL and headers but no initiating frame ID. Reuse its captured
+      // headers only for a document that could have sent that Referer and Origin.
+      boolean differentDocument =
+          (r.capturedDocument != null && !document.sameDocument(r.capturedDocument))
+              || h.entrySet().stream()
+                  .anyMatch(e -> !document.matchesHeader(e.getKey(), e.getValue()));
+      if (differentDocument) removeDocumentHeaders(h);
+    } else if (document != null) {
+      String referrer = document.forRequest(r.url);
       if (!referrer.isBlank()) h.put("Referer", referrer);
     }
     boolean firstParty =
         current != null
             && current.resources.get(r.url) == r
             && MediaRequestPolicy.sameOrigin(current.web.getUrl(), r.url)
-            && MediaRequestPolicy.sameOrigin(r.pageUrl, r.url);
+            && MediaRequestPolicy.sameOrigin(document == null ? r.pageUrl : document.origin(), r.url);
     // WebView can attach a Cookie to the intercept callback even for fetch(credentials:'omit').
     // An unknown fetch destination is insufficient evidence, including for a known video URL.
     if (!firstParty || !r.requestHeadersCaptured) {
@@ -1332,18 +1358,21 @@ public class MainActivity extends Activity {
   }
 
   Map<String, String> playbackHeadersFor(WebResource r, VideoTarget target) {
-    Map<String, String> headers = mediaHeadersFor(r);
-    if (target == null || current == null || r.frozenDownloadHeaders) return headers;
+    VideoTarget live = current != null && target != null ? current.videos.get(target.key()) : null;
+    boolean sameSource =
+        live != null && live.sameSourceAs(target) && live.url.equals(r.url)
+            && current.resources.get(r.url) == r && current.documents.containsKey(live.documentId);
+    Map<String, String> headers = headersFor(r, sameSource ? live.documentReferrer : r.documentReferrer);
+    headers.putIfAbsent(MediaTransferCache.SCOPE_HEADER, r.transferScope);
+    if (target == null || r.frozenDownloadHeaders) return headers;
+    if (!sameSource) {
+      removeDocumentHeaders(headers);
+      return headers;
+    }
     // The selected HTML source is a separate operation from previewing a sniffed request.
     // A live document, element and source generation must all match the original grant.
     headers.keySet().removeIf("Cookie"::equalsIgnoreCase);
-    VideoTarget live = current.videos.get(target.key());
-    if (current.resources.get(r.url) == r
-        && live != null
-        && live.sameSourceAs(target)
-        && live.url.equals(r.url)
-        && firstPartySource(current, live)
-        && !live.sourceCookies.isEmpty()) {
+    if (firstPartySource(current, live) && !live.sourceCookies.isEmpty()) {
       String cookie = live.remainingSourceCookies(CookieManager.getInstance().getCookie(r.url));
       if (!cookie.isEmpty()) headers.put("Cookie", cookie);
     }
@@ -1351,9 +1380,7 @@ public class MainActivity extends Activity {
   }
 
   Map<String, String> mediaHeadersFor(WebResource r) {
-    Map<String, String> headers = headersFor(r);
-    headers.putIfAbsent(MediaTransferCache.SCOPE_HEADER, r.transferScope);
-    return headers;
+    return playbackHeadersFor(r, null);
   }
 
   void selectTab(BrowserTab tab) {
@@ -1452,10 +1479,10 @@ public class MainActivity extends Activity {
             target.url,
             "video/*",
             "网页视频",
-            Collections.emptyMap(),
             target.width,
             target.height,
-            target.page);
+            target.page,
+            target.documentReferrer);
     if (resource == null) return;
     bindVideoResource(tab, target, resource, true);
     if (player != null
@@ -1541,11 +1568,11 @@ public class MainActivity extends Activity {
               () -> new androidx.media3.datasource.ContentDataSource(this));
     } else {
       Map<String, String> headers = playbackHeadersFor(resource, target);
-      var network = MediaTransferCache.remotePlayback(this, resource.url, headers);
       boolean hls =
           resource.isHls()
               || androidx.media3.common.util.Util.inferContentType(Uri.parse(resource.url))
                   == C.CONTENT_TYPE_HLS;
+      var network = MediaTransferCache.remotePlayback(this, resource.url, headers, hls);
       sources =
           hls
               ? new androidx.media3.exoplayer.hls.HlsMediaSource.Factory(
@@ -1857,7 +1884,7 @@ public class MainActivity extends Activity {
     if (target == null) target = activeTarget;
     WebView web = playerTab.web;
     float scale = target.viewportWidth > 0 ? web.getWidth() / target.viewportWidth : 0;
-    if (!(scale > 0) || target.rect.isEmpty() || target.contentClip.isEmpty()) {
+    if (!Float.isFinite(scale) || !(scale > 0) || target.rect.isEmpty() || target.contentClip.isEmpty()) {
       anchorClip.setVisibility(View.INVISIBLE);
       inlinePinned = false;
       inlineExpansion = 0;
@@ -1873,6 +1900,13 @@ public class MainActivity extends Activity {
             : 0;
     android.graphics.RectF rect = scaledRect(target.rect, scale, dx, dy);
     android.graphics.RectF visible = scaledRect(target.contentClip, scale, dx, dy);
+    if (!Float.isFinite(rect.left) || !Float.isFinite(rect.top)
+        || !InlineVideoGeometry.fitsViewport(rect.width(), rect.height(), web.getWidth(), web.getHeight())) {
+      anchorClip.setVisibility(View.INVISIBLE);
+      inlinePinned = false;
+      inlineExpansion = 0;
+      return;
+    }
     InlineVideoGeometry.Placement placement =
         InlineVideoGeometry.place(
             rect.left,
@@ -1892,7 +1926,8 @@ public class MainActivity extends Activity {
         placement.top()
             + (inlinePinned ? Math.min(placement.height(), web.getHeight()) : placement.height()));
     if (inlinePinned) visible.set(0, 0, web.getWidth(), web.getHeight());
-    if (!visible.intersect(rect) || !visible.intersect(0, 0, web.getWidth(), web.getHeight())) {
+    if (!InlineVideoGeometry.fitsViewport(rect.width(), rect.height(), web.getWidth(), web.getHeight())
+        || !visible.intersect(rect) || !visible.intersect(0, 0, web.getWidth(), web.getHeight())) {
       anchorClip.setVisibility(View.INVISIBLE);
       return;
     }

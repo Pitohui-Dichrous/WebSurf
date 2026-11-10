@@ -2,6 +2,14 @@ package io.websurf.app;
 
 /** Scroll-driven page-to-top transition. No clock or animation queue participates in tracking. */
 final class InlineVideoGeometry {
+  // Allow zoomed and partially clipped media while bounding the entire TextureView,
+  // including the portion outside the visible clip.
+  static boolean fitsViewport(float width, float height, int viewportWidth, int viewportHeight) {
+    return width > 0 && height > 0
+        && width <= 4d * viewportWidth && height <= 4d * viewportHeight
+        && (double) width * height <= 4d * viewportWidth * viewportHeight;
+  }
+
   record Placement(
       float left, float top, float width, float height, boolean pinned, float expansion) {}
 

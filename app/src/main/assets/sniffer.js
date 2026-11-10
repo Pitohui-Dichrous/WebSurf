@@ -10,6 +10,7 @@
   const colorPreference = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
   let gesture = {element:null, at:-Infinity};
   const number = (value, fallback = 0) => Number.isFinite(value) ? value : fallback;
+  const elementBounds = Function.prototype.call.bind(Element.prototype.getBoundingClientRect);
   const bridge = window.WebSurfObserver;
   const post = bridge && bridge.postMessage.bind(bridge);
   const quote = JSON.stringify.bind(JSON), parse = JSON.parse.bind(JSON);
@@ -142,7 +143,7 @@
       x:number(vv && vv.offsetLeft), y:number(vv && vv.offsetTop)};
   }
   function elementRect(element, vp) {
-    const r = element.getBoundingClientRect(); return rect(r.left-vp.x,r.top-vp.y,r.width,r.height);
+    const r = elementBounds(element); return rect(r.left-vp.x,r.top-vp.y,r.width,r.height);
   }
   function clipped(element, bounds, vp, includeViewport = true) {
     let clip = includeViewport ? intersect(bounds,rect(0,0,vp.width,vp.height)) : assign({},bounds);
@@ -217,10 +218,11 @@
     if (!value) return;
     let url; try {url=new URL(value,location.href).href;} catch (_) {return;}
     if (!/^https?:/i.test(url)) return;
-    const key=url+'|'+(mime||'')+'|'+source, signature=extra?encode(extra):'';
+    const details=assign({referrerPolicy:documentPolicy()},extra||{});
+    const key=url+'|'+(mime||'')+'|'+source, signature=encode(details);
     if (sent.has(key)&&sent.get(key)===signature) return;
     if (sent.size>=500) sent.delete(sent.keys().next().value); sent.set(key,signature);
-    emit(assign({type:'resource',url,mime:mime||'',source},extra||{}));
+    emit(assign({type:'resource',url,mime:mime||'',source},details));
   }
   function sourceOf(v) {return v.getAttribute('src')?v.src||'':v.currentSrc||'';}
   function httpUrl(value) {
@@ -265,7 +267,7 @@
   function payload(state,type,extra) {
     const v=state.element;
     return assign({type,mediaId:state.id,sourceVersion:state.version,url:state.url,width:state.awaitingSource?0:v.videoWidth||0,height:state.awaitingSource?0:v.videoHeight||0,
-      title:document.title||'',poster:posterOf(v),qualitySources:qualitySources(state),nativeFailed:!!state.nativeFailed,video:v.tagName==='VIDEO',hasAudio:typeof v.mozHasAudio==='boolean'?v.mozHasAudio:
+      title:document.title||'',referrerPolicy:documentPolicy(),poster:posterOf(v),qualitySources:qualitySources(state),nativeFailed:!!state.nativeFailed,video:v.tagName==='VIDEO',hasAudio:typeof v.mozHasAudio==='boolean'?v.mozHasAudio:
         (v.audioTracks?v.audioTracks.length>0:(v.webkitAudioDecodedByteCount>0?true:null)),userInitiated:false,attached:state.attached},
       sessionState(state),geometry(v),extra||{});
   }
@@ -321,7 +323,7 @@
     for(let depth=0;depth<8&&anchor.parentElement&&anchor.parentElement!==document.body;depth++){
       const parent=anchor.parentElement;let own,outer;
       try{own=window.getComputedStyle(anchor);outer=window.getComputedStyle(parent);}catch(_){break;}
-      const boundary=parent.getBoundingClientRect(),video=element.getBoundingClientRect();
+      const boundary=elementBounds(parent),video=elementBounds(element);
       const positioned=own.position==='absolute'||own.position==='fixed';
       const specialLayout=/flex|grid/.test(outer.display||'');
       const clippedBelow=/hidden|clip|scroll|auto/.test(outer.overflowY||outer.overflow||'')&&boundary.bottom<video.bottom+48;
@@ -352,7 +354,7 @@
     if(state.buttonAnchor!==anchor||state.buttonRail.parentElement!==parent){
       parent.insertBefore(state.buttonRail,anchor.nextSibling);state.buttonAnchor=anchor;
     }
-    const bounds=state.element.getBoundingClientRect();
+    const bounds=elementBounds(state.element);
     let visible=true;
     for(let node=state.element;node&&node!==document;node=node.parentElement){
       let css;try{css=window.getComputedStyle(node);}catch(_){continue;}
@@ -361,7 +363,7 @@
     // A normal-flow sibling reserves a separate row. Scrolling moves it with the page,
     // without a fixed overlay covering the video's subtitles, badges or quality control.
     setStyle(state.buttonRail,{display:visible&&bounds.width>0&&bounds.height>0?'flex':'none'});
-    const railBounds=state.buttonRail.getBoundingClientRect();
+    const railBounds=elementBounds(state.buttonRail);
     setStyle(state.button,{'margin-right':Math.max(0,Math.min(Math.max(0,railBounds.width-98),railBounds.right-bounds.right))+'px'});
     applyButtonTheme(state);
   }
@@ -522,16 +524,18 @@
     report(state,'removed');release(state,{sourceChanged:true,button:false});
     state.listeners.forEach(([name,callback])=>state.element.removeEventListener(name,callback));media.delete(state.id);byElement.delete(state.element);
   }
+  function documentPolicy() {
+    const meta=document.querySelector('meta[name="referrer"]');return meta&&meta.content||'';
+  }
   function scan() {
     scanPending=false;if(disposed)return;checkFrames();media.forEach(state=>{if(!state.element.isConnected)forget(state);});
     document.querySelectorAll('video,audio').forEach(inspect);document.querySelectorAll('img').forEach(i=>resource(i.currentSrc||i.src,'image/*','网页图片'));
     document.querySelectorAll('a[href]').forEach(a=>{
       const url=httpUrl(a.href);if(!url)return;
       if(!a.hasAttribute('download')&&!/^(video|audio)\//i.test(a.type||'')&&!/\.(mp4|m4v|m3u8|webm|mov|mkv|flv|mp3|m4a|aac|wav|ogg|flac|opus)([?#]|$)/i.test(new URL(url).pathname))return;
-      const meta=document.querySelector('meta[name="referrer"]');
       // A native export has no browser request yet: do not invent a cross-origin page referrer.
       // The actual request headers, when observed, take precedence over this conservative fallback.
-      const policy=/(^|\s)noreferrer(\s|$)/i.test(a.rel||'')?'no-referrer':a.referrerPolicy||(meta&&meta.content)||(new URL(url).origin!==new URL(location.href).origin?'no-referrer':'');
+      const policy=/(^|\s)noreferrer(\s|$)/i.test(a.rel||'')?'no-referrer':a.referrerPolicy||documentPolicy()||(new URL(url).origin!==new URL(location.href).origin?'no-referrer':'');
       resource(url,a.type,'下载链接',{referrerPolicy:policy});
     });scheduleLayout();
   }
@@ -610,7 +614,7 @@
       if(candidates.length===1){target=candidates[0];break;}if(candidates.length>1)break;
     }}
     if(!target&&Number.isFinite(e.clientX)&&Number.isFinite(e.clientY)){
-      const matches=Array.from(media.values()).filter(state=>{const r=state.element.getBoundingClientRect();return e.clientX>=r.left&&e.clientX<=r.right&&e.clientY>=r.top&&e.clientY<=r.bottom;});
+      const matches=Array.from(media.values()).filter(state=>{const r=elementBounds(state.element);return e.clientX>=r.left&&e.clientX<=r.right&&e.clientY>=r.top&&e.clientY<=r.bottom;});
       if(matches.length===1)target=matches[0].element;
     }gesture={element:target||null,at:Date.now(),event:e};
   }

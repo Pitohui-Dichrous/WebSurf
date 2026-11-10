@@ -464,7 +464,6 @@ final class DownloadEngine {
                   HlsPlaylist.Range range = new HlsPlaylist.Range(start, end - start);
                   try (Response r = connect(url, range, validator, total);
                       OutputStream out = new FileOutputStream(part)) {
-                    long copied = 0;
                     byte[] buffer = new byte[128 * 1024];
                     int n;
                     while (true) {
@@ -476,11 +475,8 @@ final class DownloadEngine {
                       if (n == -1) break;
                       check();
                       out.write(buffer, 0, n);
-                      copied += n;
                       account(n, true);
-                      if (copied > range.length) throw new RangeRejectedException("下载范围长度发生变化");
                     }
-                    if (copied != range.length) throw new RangeRejectedException("下载范围不完整");
                   }
                   return part;
                 }));
@@ -640,10 +636,12 @@ final class DownloadEngine {
         }
         if (range != null) {
           String contentRange = c.header("Content-Range");
+          long contentLength = c.body().contentLength();
           String prefix = "bytes " + range.offset + "-" + (range.offset + range.length - 1) + "/";
           if (code != 206
               || contentRange == null
               || !contentRange.startsWith(prefix)
+              || (contentLength >= 0 && contentLength != range.length)
               || (validator != null
                   && (!contentRange.equals(prefix + total)
                       || !validator.value.equals(c.header(validator.header))))) {
@@ -690,6 +688,7 @@ final class DownloadEngine {
         }
       }
       InputStream raw = c.body().byteStream();
+      if (range != null) raw = new RangeInput(raw, range.length);
       raw =
           MediaTransferCache.capture(
               context,
@@ -710,6 +709,41 @@ final class DownloadEngine {
       }
       connection.close();
       activeConnections.remove(call);
+    }
+  }
+
+  /** Checks the wire bytes before caching, progress accounting or AES decryption. */
+  private static final class RangeInput extends InputStream {
+    private final InputStream source;
+    private final byte[] one = new byte[1];
+    private long remaining;
+
+    RangeInput(InputStream source, long length) {
+      this.source = source;
+      remaining = length;
+    }
+
+    @Override
+    public int read(byte[] buffer, int offset, int length) throws IOException {
+      if (length == 0) return 0;
+      if (remaining == 0) {
+        if (source.read() != -1) throw new RangeRejectedException("服务器返回的数据超过请求范围");
+        return -1;
+      }
+      int n = source.read(buffer, offset, (int) Math.min(remaining, length));
+      if (n < 0) throw new RangeRejectedException("下载范围不完整");
+      remaining -= n;
+      return n;
+    }
+
+    @Override
+    public int read() throws IOException {
+      return read(one, 0, 1) == -1 ? -1 : one[0] & 255;
+    }
+
+    @Override
+    public void close() throws IOException {
+      source.close();
     }
   }
 

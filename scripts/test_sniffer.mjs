@@ -118,7 +118,7 @@ function harness({media=[],width=400,height=700,childFrame=false,dark=false,ance
     messages.push(packet.observation||packet);}};window.WebSurfObserver=bridge;
   class Xhr extends Events{open(){}}
   class Clock extends Date{static now(){return clock;}}
-  const context=vm.createContext({window,document,location:{href:'https://page.example/watch',origin:'https://page.example',ancestorOrigins:ancestors},URL,Event:FakeEvent,Date:Clock,XMLHttpRequest:Xhr,
+  const context=vm.createContext({window,document,location:{href:'https://page.example/watch',origin:'https://page.example',ancestorOrigins:ancestors},Element,URL,Event:FakeEvent,Date:Clock,XMLHttpRequest:Xhr,
     MutationObserver:class{constructor(callback){this.callback=callback;mutations.push(this);}observe(){}},
     PerformanceObserver:class{constructor(callback){this.callback=callback;}observe(){}},
     setTimeout(callback,delay){timers.push({at:clock+delay,callback});return timers.length;}});
@@ -475,6 +475,14 @@ test('scroll geometry is frame-scheduled, coalesced, and carries a stable docume
   assert.equal(moved.topScrollY,260);assert.equal(moved.rect.top,70);
   assert.equal(moved.rect.top+moved.topScrollY+moved.visualOffsetY,first.rect.top);
   assert.ok(moved.layoutRevision>first.layoutRevision);assert.equal(moved.scrollPolicy,'document');
+});
+
+test('the native player uses browser geometry when a page shadows video bounds',()=>{
+  const v=new Media({box:bounds(10,20,320,180)}),h=harness({media:[v]});
+  v.getBoundingClientRect=()=>bounds(0,0,1e300,1e300);
+  h.ack();h.tick(16);
+  const r=h.events('layout').at(-1).rect;
+  assert.deepEqual([r.left,r.top,r.width,r.height],[10,20,320,180]);
 });
 test('contentClip preserves the document video when the viewport has scrolled it fully away',()=>{
   const v=new Media({box:bounds(10,-240,320,180)}),h=harness({media:[v]});h.window.scrollY=500;h.ack();h.tick(16);

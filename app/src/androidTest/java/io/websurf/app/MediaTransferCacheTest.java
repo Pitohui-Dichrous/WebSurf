@@ -10,10 +10,15 @@ import androidx.media3.datasource.DataSpec;
 import androidx.media3.datasource.TransferListener;
 import androidx.test.core.app.ApplicationProvider;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
+import java.io.BufferedReader;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
@@ -85,6 +90,95 @@ public final class MediaTransferCacheTest {
   }
 
   @Test
+  public void hlsOffsetRejectsIgnoredRangeBeforeTheFirstBodyByte() throws Exception {
+    IOException error =
+        assertThrows(
+            IOException.class,
+            () -> rangeReply(true, 1L << 40, 1, "200 OK\r\nTransfer-Encoding: chunked", null));
+    assertTrue(error.toString(), error.getMessage().contains("HLS 字节范围"));
+  }
+
+  @Test
+  public void hlsRangeVerifiesBothEndpointsAndBoundsChunkedPlayback() throws Exception {
+    String partial = "206 Partial Content\r\nTransfer-Encoding: chunked\r\nContent-Range: bytes ";
+    String chunked = "3\r\nXYZ\r\n0\r\n\r\n";
+    assertArrayEquals(new byte[] {'X'}, rangeReply(true, 7, 1, partial + "7-7/8", chunked));
+    for (String invalid : List.of("6-6/8", "7-8/9", "7-7/7", "7-7/junk")) {
+      assertThrows(IOException.class, () -> rangeReply(true, 7, 1, partial + invalid, null));
+    }
+    assertArrayEquals(
+        new byte[] {'b', 'c'}, rangeReply(false, 1, 2, "200 OK\r\nContent-Length: 4", "abcd"));
+    assertArrayEquals(
+        new byte[] {'a', 'b'}, rangeReply(true, 0, 2, "200 OK\r\nContent-Length: 4", "abcd"));
+  }
+
+  private byte[] rangeReply(boolean hls, long position, long length, String headers, String body)
+      throws Exception {
+    try (ServerSocket listener = FixtureHttp.listen()) {
+      listener.setSoTimeout(5000);
+      String root = "http://127.0.0.1:" + listener.getLocalPort();
+      ExecutorService pool = Executors.newSingleThreadExecutor();
+      try {
+        Future<Void> server =
+            pool.submit(
+                () -> {
+                  try (Socket client = listener.accept()) {
+                    client.setSoTimeout(5000);
+                    var input =
+                        new BufferedReader(
+                            new InputStreamReader(
+                                client.getInputStream(), StandardCharsets.US_ASCII));
+                    var out = client.getOutputStream();
+                    FixtureHttp.requestTarget(input, out);
+                    String range = null;
+                    for (String line; (line = input.readLine()) != null && !line.isEmpty(); ) {
+                      if (line.regionMatches(true, 0, "Range: ", 0, 7)) range = line.substring(7);
+                    }
+                    assertEquals("bytes=" + position + "-" + (position + length - 1), range);
+                    out.write(
+                        ("HTTP/1.1 " + headers + "\r\nConnection: close\r\n\r\n")
+                            .getBytes(StandardCharsets.US_ASCII));
+                    if (body != null) out.write(body.getBytes(StandardCharsets.US_ASCII));
+                    out.flush();
+                    if (body == null) {
+                      // Keep the chunked stream open. A rejected request closes from the client.
+                      try {
+                        assertEquals(-1, input.read());
+                      } catch (java.net.SocketException peerReset) {
+                        // A cancellation may reset the socket.
+                      }
+                    }
+                  }
+                  return null;
+                });
+        var sources =
+            MediaTransferCache.remotePlayback(
+                context, root, Map.of(NativeMediaHttp.LOCAL_ORIGIN, root), hls);
+        DataSource data = sources.createDataSource();
+        try {
+          data.open(
+              new DataSpec.Builder()
+                  .setUri(root + "/part.ts")
+                  .setPosition(position)
+                  .setLength(length)
+                  .build());
+          ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+          byte[] buffer = new byte[16];
+          int n;
+          while ((n = data.read(buffer, 0, buffer.length)) != C.RESULT_END_OF_INPUT)
+            bytes.write(buffer, 0, n);
+          return bytes.toByteArray();
+        } finally {
+          data.close();
+          server.get(6, TimeUnit.SECONDS);
+        }
+      } finally {
+        pool.shutdownNow();
+      }
+    }
+  }
+
+  @Test
   public void publicRedirectRequestsStripCredentialsAndHonorBothReferrerPolicies()
       throws Exception {
     String root = "http://media.example/export";
@@ -127,7 +221,7 @@ public final class MediaTransferCacheTest {
     java.io.File file = java.io.File.createTempFile("remote-hls", ".mp4", context.getCacheDir());
     try {
       java.nio.file.Files.write(file.toPath(), new byte[] {1, 2, 3});
-      DataSource.Factory remote = MediaTransferCache.remotePlayback(context, source, headers);
+      DataSource.Factory remote = MediaTransferCache.remotePlayback(context, source, headers, true);
       for (Uri uri :
           List.of(
               Uri.fromFile(file),
