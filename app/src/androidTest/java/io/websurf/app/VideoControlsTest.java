@@ -64,6 +64,11 @@ public final class VideoControlsTest {
                     .findFirst()
                     .orElseThrow();
             a.openTarget(a.current, target, true);
+            return null;
+          });
+      await("Takeover did not attach", 10000, () -> ui(a -> a.player != null));
+      ui(
+          a -> {
             // Freeze the short fixture while Android rotates; begin interaction only after layout.
             a.player.pause();
             a.setPlayerMode(VideoChrome.Mode.FULLSCREEN);

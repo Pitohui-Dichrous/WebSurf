@@ -97,4 +97,28 @@ public class HlsPlaylistTest {
   public void rejectsHtmlErrorPage() throws Exception {
     HlsPlaylist.parse(base, "<html>Forbidden</html>");
   }
+
+  @Test
+  public void boundsExpandedSegmentVariantAudioKeyAndMapUrls() throws Exception {
+    String longBase = "https://example.test/" + "x".repeat(8192) + "/list.m3u8";
+    for (String item :
+        new String[] {
+          "#EXTINF:1,\n%d.ts",
+          "#EXT-X-STREAM-INF:BANDWIDTH=1\n%d.m3u8",
+          "#EXT-X-MEDIA:TYPE=AUDIO,URI=\"%d.m3u8\"",
+          "#EXT-X-KEY:METHOD=AES-128,URI=\"%d.key\"",
+          "#EXT-X-MAP:URI=\"%d.mp4\""
+        }) {
+      StringBuilder playlist = new StringBuilder("#EXTM3U\n");
+      for (int i = 0; i < 530; i++)
+        playlist.append(item.replace("%d", Integer.toString(i))).append('\n');
+      playlist.append("#EXTINF:1,\nlast.ts\n#EXT-X-ENDLIST");
+      IOException failure =
+          assertThrows(IOException.class, () -> HlsPlaylist.parse(longBase, playlist.toString()));
+      assertEquals("播放列表的地址总量超过限制", failure.getMessage());
+    }
+    HlsPlaylist control = HlsPlaylist.parse(longBase, "#EXTM3U\n#EXTINF:1,\n1.ts\n#EXT-X-ENDLIST");
+    assertTrue(control.endList);
+    assertEquals(longBase.replace("list.m3u8", "1.ts"), control.segments.get(0).url);
+  }
 }

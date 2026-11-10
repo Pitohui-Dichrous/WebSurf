@@ -8,7 +8,6 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
-import android.webkit.CookieManager;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -368,9 +367,6 @@ public final class ResourcePreviewLoader implements AutoCloseable {
             + resource.previewIdentity
             + "\n"
             + new TreeMap<>(headers);
-    value += "\n" + CookieManager.getInstance().getCookie(resource.url);
-    if (WebResource.isHttp(resource.posterUrl))
-      value += "\n" + CookieManager.getInstance().getCookie(resource.posterUrl);
     try {
       byte[] digest =
           MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8));
@@ -463,19 +459,17 @@ public final class ResourcePreviewLoader implements AutoCloseable {
       Budget budget)
       throws IOException {
     String url = address;
+    MediaRequestPolicy.requireNetwork(original, url);
+    Map<String, String> scopedHeaders = MediaRequestPolicy.headers(original, url, headers);
     for (int redirects = 0; redirects < 8; redirects++) {
       budget.request();
-      if (!WebResource.isHttp(url)) throw new IOException("Unsupported preview URL");
       HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection();
       connection.setInstanceFollowRedirects(false);
       connection.setConnectTimeout(2500);
       connection.setReadTimeout(3000);
       connection.setRequestProperty("Accept-Encoding", "identity");
-      for (Map.Entry<String, String> entry :
-          ScopedHttpDataSource.scoped(original, url, headers).entrySet())
+      for (Map.Entry<String, String> entry : scopedHeaders.entrySet())
         connection.setRequestProperty(entry.getKey(), entry.getValue());
-      String cookie = CookieManager.getInstance().getCookie(url);
-      if (cookie != null && !cookie.isBlank()) connection.setRequestProperty("Cookie", cookie);
       connection.setRequestProperty("Range", "bytes=" + position + "-" + (position + length - 1));
       try {
         int code = connection.getResponseCode();
@@ -483,9 +477,9 @@ public final class ResourcePreviewLoader implements AutoCloseable {
           String location = connection.getHeaderField("Location");
           if (location == null) throw new IOException("Missing redirect location");
           String next = new URL(new URL(url), location).toString();
-          if (url.startsWith("https:") && next.startsWith("http:"))
-            throw new IOException("Insecure redirect");
+          MediaRequestPolicy.requireNetwork(url, next);
           connection.disconnect();
+          scopedHeaders = MediaRequestPolicy.headers(url, next, scopedHeaders);
           url = next;
           continue;
         }

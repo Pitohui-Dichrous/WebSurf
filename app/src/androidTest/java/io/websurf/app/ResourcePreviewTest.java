@@ -40,6 +40,17 @@ public final class ResourcePreviewTest {
         });
   }
 
+  @Test
+  public void malformedFixtureInputLeavesPreviewResponderAvailable() throws Exception {
+    assertEquals("HTTP/1.1 400 Bad Request", FixtureHttp.probeStatus(server.socket, "malformed"));
+    assertEquals(
+        "HTTP/1.1 416 Range Not Satisfiable",
+        FixtureHttp.probeStatus(server.socket, "GET /cover.png HTTP/1.1\r\nRange: bytes=foo-1"));
+    assertEquals(
+        "HTTP/1.1 206 Partial Content",
+        FixtureHttp.probeStatus(server.socket, "GET /cover.png HTTP/1.1\r\nRange: bytes=0-1"));
+  }
+
   @After
   public void cleanup() throws Exception {
     ui(
@@ -118,7 +129,15 @@ public final class ResourcePreviewTest {
   public void posterRedirectDoesNotForwardAnotherOriginCredentials() throws Exception {
     WebResource resource = new WebResource(server.base() + "/master.m3u8");
     resource.posterUrl = server.base() + "/poster-redirect";
-    ResourcePreviewLoader.Result result = load(resource);
+    String cross = server.base().replace("127.0.0.1", "localhost");
+    CookieManager.getInstance().setCookie(cross, "preview_foreign=strict; SameSite=Strict; Path=/");
+    ResourcePreviewLoader.Result result;
+    try {
+      result = load(resource);
+    } finally {
+      CookieManager.getInstance().setCookie(cross, "preview_foreign=; Max-Age=0; Path=/");
+    }
+
     assertNotNull(result.bitmap);
     assertEquals(1, server.crossRequests.get());
     assertEquals(0, server.credentialLeaks.get());
@@ -239,7 +258,7 @@ public final class ResourcePreviewTest {
   }
 
   private static final class Fixture implements AutoCloseable {
-    final ServerSocket socket = new ServerSocket(0);
+    final ServerSocket socket = FixtureHttp.listen();
     final ExecutorService pool = Executors.newCachedThreadPool();
     final AtomicInteger requests = new AtomicInteger(),
         transferred = new AtomicInteger(),
@@ -294,9 +313,8 @@ public final class ResourcePreviewTest {
         BufferedReader input =
             new BufferedReader(
                 new InputStreamReader(connection.getInputStream(), StandardCharsets.US_ASCII));
-        String first = input.readLine();
-        if (first == null) return;
-        String path = first.split(" ")[1];
+        OutputStream output = connection.getOutputStream();
+        String path = FixtureHttp.requestTarget(input, output);
         requests.incrementAndGet();
         Map<String, String> headers = new HashMap<>();
         String line;
@@ -307,7 +325,6 @@ public final class ResourcePreviewTest {
                 line.substring(0, colon).toLowerCase(Locale.ROOT),
                 line.substring(colon + 1).trim());
         }
-        OutputStream output = connection.getOutputStream();
         if (path.equals("/delayed-poster")) {
           delayedPosterRequested.countDown();
           try {
@@ -327,8 +344,9 @@ public final class ResourcePreviewTest {
         }
         if (path.equals("/cross-poster")) {
           crossRequests.incrementAndGet();
-          if (headers.getOrDefault("cookie", "").contains("preview_private")
-              || headers.containsKey("authorization")) credentialLeaks.incrementAndGet();
+          if (headers.containsKey("cookie")
+              || headers.containsKey("authorization")
+              || !(base() + "/").equals(headers.get("referer"))) credentialLeaks.incrementAndGet();
         }
         if (path.equals("/video.mp4")
             && (!headers.getOrDefault("cookie", "").contains("preview_private=1")
@@ -350,22 +368,10 @@ public final class ResourcePreviewTest {
                         : path.equals("/master.m3u8") ? master : poster;
         if (path.endsWith(".ts") || path.equals("/low.m3u8") || path.equals("/high.m3u8"))
           segmentRequests.incrementAndGet();
-        int start = 0, end = data.length - 1;
         String range = headers.get("range");
-        boolean partial = range != null && range.startsWith("bytes=");
-        if (partial) {
-          String[] pieces = range.substring(6).split("-", 2);
-          start = Integer.parseInt(pieces[0]);
-          if (pieces.length > 1 && !pieces[1].isEmpty())
-            end = Math.min(end, Integer.parseInt(pieces[1]));
-        }
-        if (start > end) {
-          output.write(
-              "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-                  .getBytes(StandardCharsets.US_ASCII));
-          return;
-        }
-        int length = end - start + 1;
+        boolean partial = range != null;
+        FixtureHttp.Range slice = FixtureHttp.range(range, data.length, true, output);
+        int length = slice.length();
         String response =
             "HTTP/1.1 "
                 + (partial ? "206 Partial Content" : "200 OK")
@@ -373,11 +379,17 @@ public final class ResourcePreviewTest {
                 + length
                 + "\r\nConnection: close\r\n"
                 + (partial
-                    ? "Content-Range: bytes " + start + "-" + end + "/" + data.length + "\r\n"
+                    ? "Content-Range: bytes "
+                        + slice.start()
+                        + "-"
+                        + slice.end()
+                        + "/"
+                        + data.length
+                        + "\r\n"
                     : "")
                 + "\r\n";
         output.write(response.getBytes(StandardCharsets.US_ASCII));
-        output.write(data, start, length);
+        output.write(data, slice.start(), length);
         output.flush();
         transferred.addAndGet(length);
       } catch (IOException ignored) {

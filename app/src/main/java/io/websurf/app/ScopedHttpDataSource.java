@@ -1,7 +1,6 @@
 package io.websurf.app;
 
 import android.net.Uri;
-import android.webkit.CookieManager;
 import androidx.media3.common.C;
 import androidx.media3.datasource.BaseDataSource;
 import androidx.media3.datasource.DataSource;
@@ -43,35 +42,7 @@ final class ScopedHttpDataSource extends BaseDataSource {
   }
 
   static boolean sameOrigin(String a, String b) {
-    try {
-      URI x = URI.create(a), y = URI.create(b);
-      return x.getScheme().equalsIgnoreCase(y.getScheme())
-          && x.getHost().equalsIgnoreCase(y.getHost())
-          && port(x) == port(y);
-    } catch (Exception e) {
-      return false;
-    }
-  }
-
-  static int port(URI uri) {
-    return uri.getPort() != -1
-        ? uri.getPort()
-        : "https".equalsIgnoreCase(uri.getScheme()) ? 443 : 80;
-  }
-
-  static Map<String, String> scoped(
-      String original, String destination, Map<String, String> headers) {
-    Map<String, String> result = new LinkedHashMap<>();
-    boolean same = sameOrigin(original, destination);
-    for (Map.Entry<String, String> e : headers.entrySet()) {
-      String name = e.getKey();
-      if (name.equalsIgnoreCase("Cookie") || name.equalsIgnoreCase("Authorization")) {
-        if (same) result.put(name, e.getValue());
-      } else if (name.equalsIgnoreCase("User-Agent")
-          || name.equalsIgnoreCase("Referer")
-          || name.equalsIgnoreCase("Origin")) result.put(name, e.getValue());
-    }
-    return result;
+    return MediaRequestPolicy.sameOrigin(a, b);
   }
 
   @Override
@@ -79,21 +50,16 @@ final class ScopedHttpDataSource extends BaseDataSource {
     transferInitializing(spec);
     String url = spec.uri.toString();
     try {
+      MediaRequestPolicy.requireNetwork(source, url);
+      Map<String, String> scopedHeaders = MediaRequestPolicy.headers(source, url, headers);
       for (int redirects = 0; redirects <= 8; redirects++) {
-        if (!WebResource.isHttp(url)) throw new IOException("只支持 HTTP / HTTPS 媒体地址");
         connection = (HttpURLConnection) new URL(url).openConnection();
         connection.setInstanceFollowRedirects(false);
         connection.setConnectTimeout(15000);
         connection.setReadTimeout(20000);
         connection.setRequestProperty("Accept-Encoding", "identity");
-        Map<String, String> scopedHeaders = scoped(source, url, headers);
         for (Map.Entry<String, String> e : scopedHeaders.entrySet())
           connection.setRequestProperty(e.getKey(), e.getValue());
-        boolean explicitCookie =
-            scopedHeaders.keySet().stream().anyMatch(name -> name.equalsIgnoreCase("Cookie"));
-        String cookie = CookieManager.getInstance().getCookie(url);
-        if (!explicitCookie && cookie != null && !cookie.trim().isEmpty())
-          connection.setRequestProperty("Cookie", cookie);
         if (spec.position > 0 || spec.length != C.LENGTH_UNSET)
           connection.setRequestProperty(
               "Range",
@@ -108,8 +74,8 @@ final class ScopedHttpDataSource extends BaseDataSource {
           String next = new URL(new URL(url), location).toString();
           connection.disconnect();
           connection = null;
-          if (url.startsWith("https:") && next.startsWith("http:"))
-            throw new IOException("拒绝从 HTTPS 降级到 HTTP");
+          MediaRequestPolicy.requireNetwork(url, next);
+          scopedHeaders = MediaRequestPolicy.headers(url, next, scopedHeaders);
           url = next;
           continue;
         }

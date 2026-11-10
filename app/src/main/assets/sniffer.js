@@ -10,20 +10,83 @@
   const colorPreference = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
   let gesture = {element:null, at:-Infinity};
   const number = (value, fallback = 0) => Number.isFinite(value) ? value : fallback;
-  function direct(data) { try { window.WebSurfObserver.postMessage(JSON.stringify(data)); } catch (_) {} }
+  const bridge = window.WebSurfObserver;
+  const post = bridge && bridge.postMessage.bind(bridge);
+  const quote = JSON.stringify.bind(JSON), parse = JSON.parse.bind(JSON);
+  const keys = Object.keys, array = Array.isArray, assign = Object.assign;
+  const seal = '__WEBSURF_DOCUMENT_START_SEAL__';
+  // Only this document-start closure holds the seal. Never pass it through page callbacks,
+  // mutable JSON.stringify/toJSON hooks or a parent window.
+  let trustedEvent = null, nextInputTicket = 0;
+  function rememberInput(event) {
+    if (!event.isTrusted) return;
+    if (event.type === 'keydown' && event.key !== 'Enter' && event.key !== ' ' && event.key !== 'MediaPlayPause') return;
+    trustedEvent = event;
+  }
+  ['pointerdown','pointerup','touchstart','touchend','click','keydown'].forEach(type=>document.addEventListener(type,rememberInput,true));
+  function attest(state,action) {
+    if(!post || !seal || typeof state.url!=='string')return 0;
+    // Register first, but send the proof during the gesture. A delayed handshake must never
+    // mint a new authorization using a later physical tap or a later document's epoch.
+    if(epoch===null || window.parent!==window)hello();
+    const ticket=++nextInputTicket;
+    post('{"type":"input","documentId":'+quote(documentId)+',"epoch":'+epoch+',"seal":'+quote(seal)+
+      ',"inputTicket":'+ticket+',"mediaId":'+quote(state.id)+',"sourceVersion":'+state.version+',"url":'+quote(state.url)+',"action":'+quote(action)+'}');
+    return ticket;
+  }
+  // A site's Object.prototype.toJSON must not turn a layout or resource observation into a
+  // signed playback command. Encode only the observer's own JSON fields and call saved intrinsics.
+  function encode(value, depth = 0) {
+    if (value === null || typeof value !== 'object') return quote(value);
+    if (depth > 8) throw new Error('Observation is too deeply nested');
+    if (array(value)) {
+      let items = '';
+      for (let i=0;i<value.length;i++) items += (i?',':'') + (encode(value[i],depth+1) || 'null');
+      return '['+items+']';
+    }
+    const names=keys(value);
+    let fields='';
+    for (let i=0;i<names.length;i++) {
+      const field=names[i], encoded=encode(value[field],depth+1);
+      if (encoded!==undefined) fields += (fields?',':'') + quote(field) + ':' + encoded;
+    }
+    return '{'+fields+'}';
+  }
+  function direct(data) {
+    try { post('{"seal":'+quote(seal)+',"observation":'+encode(data)+'}'); } catch (_) {}
+  }
+  function box(r) {return r && rect(r.left,r.top,r.width,r.height);}
+  function projection(event) {
+    return {type:event.type==='removed'||event.type==='unproject'?'unproject':'project',
+      documentId:event.documentId,mediaId:event.mediaId,sourceVersion:event.sourceVersion,epoch:event.epoch,
+      rect:box(event.rect),clip:box(event.clip),contentClip:box(event.contentClip||event.clip),
+      viewportWidth:event.viewportWidth,viewportHeight:event.viewportHeight,topScrollX:event.topScrollX,topScrollY:event.topScrollY,
+      visualOffsetX:event.visualOffsetX,visualOffsetY:event.visualOffsetY,viewportScale:event.viewportScale,
+      scrollPolicy:event.scrollPolicy,layoutRevision:event.layoutRevision};
+  }
+  function project(event) {
+    const projected = projection(event);
+    if(window.parent!==window) {
+      try {window.parent.postMessage({__websurfEvent:true,event:projected},'*');}catch(_){}
+    } else direct(assign(projected,{owner:projected.documentId,documentId}));
+  }
   function route(data) {
-    if (window.parent !== window && data.mediaId) {
-      try { window.parent.postMessage({__websurfEvent:true, event:data}, '*'); } catch (_) {}
-    } else direct(data);
+    direct(data);
+    if (window.parent !== window && data.mediaId) project(data);
   }
   function emit(data) {
     data.page = location.href; data.documentId = documentId;
-    if (epoch === null && data.type !== 'hello') { if (queued.length < 400) queued.push(data); return; }
+    if (epoch === null && data.type !== 'hello') {
+      if (queued.length>=400 && data.inputTicket>0) queued.pop();
+      if (queued.length<400) queued.push(data);
+      return;
+    }
     data.epoch = epoch; route(data);
   }
   try { window.WebSurfObserver.onmessage = event => {
-    let ack; try { ack = JSON.parse(event.data); } catch (_) { return; }
-    if (ack.documentId !== documentId || !Number.isFinite(ack.epoch)) return;
+    let ack; try { ack = parse(event.data); } catch (_) { return; }
+    if (ack.documentId !== documentId || !Number.isSafeInteger(ack.epoch)) return;
+    if (ack.command) {if (ack.epoch===epoch&&ack.command.documentId===documentId) command(ack.command);return;}
     const changed=epoch!==null&&epoch!==ack.epoch;
     epoch = ack.epoch; if(typeof ack.dark==='boolean')setTheme(ack.dark); queued.splice(0).forEach(emit);
     // A same-URL navigation can advance native's epoch after document-start injection already
@@ -31,16 +94,25 @@
     if(changed){sent.clear();media.forEach(state=>{state.metadataSignature='';state.layoutSignature='';});scan();
       postChildren({__websurfHandshake:true});}
   }; } catch (_) {}
-  function hello() { if (!disposed) emit({type:'hello'}); }
+  // Chromium supplies the complete ancestor origin chain, including otherwise opaque parents.
+  const firstPartyTree = (() => {
+    if (window.credentialless) return false;
+    if (window.parent === window) return true;
+    const ancestors = location.ancestorOrigins;
+    if (!ancestors || !ancestors.length) return false;
+    for (let i = 0; i < ancestors.length; i++) if (ancestors[i] !== window.origin) return false;
+    return true;
+  })();
+  function hello() { if (!disposed && post) post('{"type":"hello","page":'+quote(location.href)+',"documentId":'+quote(documentId)+',"firstPartyTree":'+firstPartyTree+',"seal":'+quote(seal)+'}'); }
   hello(); setTimeout(hello, 500);
 
   function claimPlayGesture(element) {
     const event=window.event;
-    if(!event||!event.isTrusted||!['click','pointerup','pointerdown','touchend','keydown'].includes(event.type))return;
+    if(!event||event!==trustedEvent||!event.isTrusted||!['click','pointerup','pointerdown','touchend','keydown'].includes(event.type))return;
     if(event.type==='keydown'&&![' ','Enter','MediaPlayPause'].includes(event.key))return;
     const claimed=gestureClaims.get(event);
     if(claimed&&claimed!==element)return;
-    gestureClaims.set(event,element);gesture={element,at:Date.now()};
+    gestureClaims.set(event,element);gesture={element,at:Date.now(),event};
   }
   // The exact receiver of play() during a trusted handler identifies custom controls even
   // when their buttons live outside the video container. No global userActivation window.
@@ -48,7 +120,7 @@
     const prototype=window.HTMLMediaElement&&window.HTMLMediaElement.prototype;
     if(prototype){
       const descriptor=Object.getOwnPropertyDescriptor(prototype,'play'),original=prototype.play;
-      Object.defineProperty(prototype,'play',Object.assign({},descriptor,{configurable:true,writable:true,value:function(){
+      Object.defineProperty(prototype,'play',assign({},descriptor,{configurable:true,writable:true,value:function(){
         claimPlayGesture(this);return original.apply(this,arguments);
       }}));
     }
@@ -72,7 +144,7 @@
     const r = element.getBoundingClientRect(); return rect(r.left-vp.x,r.top-vp.y,r.width,r.height);
   }
   function clipped(element, bounds, vp, includeViewport = true) {
-    let clip = includeViewport ? intersect(bounds,rect(0,0,vp.width,vp.height)) : Object.assign({},bounds);
+    let clip = includeViewport ? intersect(bounds,rect(0,0,vp.width,vp.height)) : assign({},bounds);
     for (let node=element; node && node!==document; node=node.parentElement) {
       let css; try { css=window.getComputedStyle(node); } catch (_) { continue; }
       if (css.display==='none' || css.visibility==='hidden' || css.visibility==='collapse') return rect(clip.left,clip.top,0,0);
@@ -102,11 +174,11 @@
   }
   function geometry(element) {
     const vp=viewport(),r=elementRect(element,vp);
-    return Object.assign({rect:r,clip:clipped(element,r,vp),contentClip:clipped(element,r,vp,false),
+    return assign({rect:r,clip:clipped(element,r,vp),contentClip:clipped(element,r,vp,false),
       scrollPolicy:scrollPolicy(element)},viewportSnapshot(vp));
   }
   function geometrySignature(g) {
-    return JSON.stringify([g.rect,g.clip,g.contentClip,g.viewportWidth,g.viewportHeight,g.topScrollX,g.topScrollY,
+    return encode([g.rect,g.clip,g.contentClip,g.viewportWidth,g.viewportHeight,g.topScrollX,g.topScrollY,
       g.visualOffsetX,g.visualOffsetY,g.viewportScale,g.scrollPolicy]);
   }
   function frames() { return Array.from(document.querySelectorAll('iframe')); }
@@ -114,7 +186,7 @@
   function invalidateFrame(session,reason){
     session.targets.forEach(event=>{
       session.blockedDocuments.add(event.documentId);
-      route(Object.assign({},event,{type:'removed',reason}));
+      project(assign({},event,{type:'unproject'}));
     });session.targets.clear();if(session.inputs)session.inputs.clear();
   }
   function checkFrames(){
@@ -135,7 +207,7 @@
     const transform=r=>rect(content.left+r.left*sx,content.top+r.top*sy,r.width*sx,r.height*sy);
     // The frame viewport clips its descendants even when the outer document has not clipped yet.
     const innerClip=intersect(transform(event.contentClip||event.clip),content);
-    return Object.assign({},event,{rect:transform(event.rect),
+    return assign({},event,{rect:transform(event.rect),
       clip:intersect(transform(event.clip),clipped(frame,content,vp)),
       contentClip:intersect(innerClip,clipped(frame,content,vp,false)),
       scrollPolicy:scrollPolicy(frame)},viewportSnapshot(vp));
@@ -144,10 +216,10 @@
     if (!value) return;
     let url; try {url=new URL(value,location.href).href;} catch (_) {return;}
     if (!/^https?:/i.test(url)) return;
-    const key=url+'|'+(mime||'')+'|'+source, signature=extra?JSON.stringify(extra):'';
+    const key=url+'|'+(mime||'')+'|'+source, signature=extra?encode(extra):'';
     if (sent.has(key)&&sent.get(key)===signature) return;
     if (sent.size>=500) sent.delete(sent.keys().next().value); sent.set(key,signature);
-    emit(Object.assign({type:'resource',url,mime:mime||'',source},extra||{}));
+    emit(assign({type:'resource',url,mime:mime||'',source},extra||{}));
   }
   function sourceOf(v) {return v.getAttribute('src')?v.src||'':v.currentSrc||'';}
   function httpUrl(value) {
@@ -167,7 +239,7 @@
       const label=String(raw).trim().slice(0,64),dimensions=label.match(/^(\d{2,5})\s*[x×]\s*(\d{2,5})$/i),edge=label.match(/^(\d{2,5})\s*p?$/i);
       const width=dimensions?Number(dimensions[1]):0,height=dimensions?Number(dimensions[2]):edge?Number(edge[1]):0;
       if(width>16384||height>16384)continue;
-      const choice={url,mime:(source.type||'').slice(0,128),label:edge?height+'p':label,width,height},length=JSON.stringify(choice).length;
+      const choice={url,mime:(source.type||'').slice(0,128),label:edge?height+'p':label,width,height},length=encode(choice).length;
       if(length>budget)continue;
       choices.push(choice);seen.add(url);budget-=length;
       if(choices.length>=12)break;
@@ -186,19 +258,23 @@
     if(!state.attached&&state.pendingWebSeek&&state.pendingWebSeek.version===state.version)values.time=state.pendingWebSeek.time;
     // currentSrc and decoder metadata can still describe the old pre-roll after src is assigned.
     if(state.awaitingSource&&!state.attached){values.time=0;values.duration=0;values.ended=false;values.readyState=0;values.error=null;
-      if(state.qualityTransfer&&state.qualityTransfer.url===state.url)Object.assign(values,state.qualityTransfer.values,{readyState:0,error:null,ended:false});}
+      if(state.qualityTransfer&&state.qualityTransfer.url===state.url)assign(values,state.qualityTransfer.values,{readyState:0,error:null,ended:false});}
     return values;
   }
   function payload(state,type,extra) {
     const v=state.element;
-    return Object.assign({type,mediaId:state.id,sourceVersion:state.version,url:state.url,width:state.awaitingSource?0:v.videoWidth||0,height:state.awaitingSource?0:v.videoHeight||0,
+    return assign({type,mediaId:state.id,sourceVersion:state.version,url:state.url,width:state.awaitingSource?0:v.videoWidth||0,height:state.awaitingSource?0:v.videoHeight||0,
       title:document.title||'',poster:posterOf(v),qualitySources:qualitySources(state),nativeFailed:!!state.nativeFailed,video:v.tagName==='VIDEO',hasAudio:typeof v.mozHasAudio==='boolean'?v.mozHasAudio:
         (v.audioTracks?v.audioTracks.length>0:(v.webkitAudioDecodedByteCount>0?true:null)),userInitiated:false,attached:state.attached},
       sessionState(state),geometry(v),extra||{});
   }
-  function report(state,type,extra) {emit(payload(state,type,extra));}
+  function report(state,type,extra) {
+    if(type==='play'&&extra&&extra.userInitiated&&gesture.event===trustedEvent&&gesture.element===state.element)
+      extra.inputTicket=attest(state,'play');
+    emit(payload(state,type,extra));
+  }
   function isUserPlay(state) {return !state.nativeFailed&&gesture.element===state.element&&Date.now()-gesture.at<1800;}
-  function request(state,action,extra) {report(state,'request',Object.assign({action},extra||{}));}
+  function request(state,action,extra) {report(state,'request',assign({action},extra||{}));}
   function dispatch(state,name) {
     const previous=state.syncEvent,event=new Event(name);state.syncEvent=event;
     try{state.element.dispatchEvent(event);}finally{state.syncEvent=previous;}
@@ -289,13 +365,13 @@
     applyButtonTheme(state);
   }
   function showButton(state) {
-    if(state.element.tagName!=='VIDEO'||state.button||!document.body)return;
+    if(!seal||state.element.tagName!=='VIDEO'||state.button||!document.body)return;
     const rail=document.createElement('div');rail.setAttribute('data-websurf-ui','takeover-rail');
     rail.style.cssText='all:initial!important;box-sizing:border-box!important;display:flex!important;position:relative!important;clear:both!important;width:100%!important;min-width:0!important;max-width:100%!important;height:48px!important;min-height:48px!important;flex-shrink:0!important;grid-column:1 / -1!important;align-items:center!important;justify-content:flex-end!important;padding:2px 0!important;';
     const button=document.createElement('button');button.type='button';button.textContent='接管播放';button.setAttribute('aria-label','使用 WebSurf 播放此视频');button.setAttribute('data-websurf-control','');
     button.style.cssText='all:initial!important;box-sizing:border-box!important;display:flex!important;position:relative!important;align-items:center!important;justify-content:center!important;min-width:98px!important;height:44px!important;min-height:44px!important;padding:0 14px!important;border:1px solid!important;border-radius:0!important;font:700 14px system-ui,sans-serif!important;letter-spacing:.04em!important;cursor:pointer!important;touch-action:manipulation!important;';
-    button.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();if(e.isTrusted!==true||!state.element.isConnected)return;
-      inspect(state.element);report(state,'takeover',{userInitiated:true});});
+    button.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();if(e!==trustedEvent||e.target!==button||e.isTrusted!==true||!state.element.isConnected)return;
+      inspect(state.element);report(state,'takeover',{userInitiated:true,inputTicket:attest(state,'takeover')});});
     rail.appendChild(button);state.button=button;state.buttonRail=rail;updateButton(state);
   }
   function setTheme(dark) {
@@ -336,14 +412,14 @@
     state.element.style.setProperty('opacity','0','important');removeButton(state);
     if(decoderWasPlaying)state.pendingDecoderPause++;
     try{state.originalPause.call(state.element);}catch(_){}
-    report(state,'attached');scheduleLayout();return true;
+    report(state,'attached',{attachment:value.attachment});scheduleLayout();return true;
   }
   function synchronize(state,value) {
     if(!state.attached)return false;
     // A separate native decoder failing is not an HTMLMediaElement failure. Forwarding it as a
     // DOM error sends ad SDKs into their own error screens before the original decoder can resume.
     if(value.error)return false;
-    const previous=Object.assign({},state.logical),version=state.version,firstSync=!state.hasNativeSync,wasBuffering=state.buffering;
+    const previous=assign({},state.logical),version=state.version,firstSync=!state.hasNativeSync,wasBuffering=state.buffering;
     state.hasNativeSync=true;
     ['time','duration','rate','volume'].forEach(key=>{if(Number.isFinite(value[key]))state.logical[key]=value[key];});
     ['paused','ended','muted'].forEach(key=>{if(typeof value[key]==='boolean')state.logical[key]=value[key];});
@@ -366,7 +442,7 @@
     if(state.buffering&&!wasBuffering)events.push('waiting');
     if((changed('paused')||firstSync||wasBuffering||previous.readyState<3)&&state.logical.readyState>=3&&!state.logical.paused&&!state.buffering&&!state.logical.error)events.push('playing');
     if(changed('time')||value.ended===true)events.push('timeupdate');if(changed('ended')&&state.logical.ended)events.push('ended');
-    if(state.logical.error&&JSON.stringify(state.logical.error)!==JSON.stringify(previous.error))events.push('error');
+    if(state.logical.error&&encode(state.logical.error)!==encode(previous.error))events.push('error');
     for(const event of events){if(!state.attached||state.version!==version)break;dispatch(state,event);}
     // The site's ended handler may synchronously assign the main source after its pre-roll.
     inspect(state.element);return true;
@@ -407,6 +483,7 @@
   function inspect(v,reason) {
     let state=byElement.get(v),added=false;
     if(!state){
+      if(window.parent!==window && epoch!==null)hello();
       added=true;state={id:String(nextId++),element:v,version:1,url:sourceOf(v),declared:declaredSource(v),actual:v.currentSrc||'',
         attached:false,saved:new Map(),syncEvent:null,originalPlay:v.play,originalPause:v.pause,logical:logical(v),style:null,button:null,
         suppressPlayUntil:0,pendingDecoderPause:0,awaitingSource:false,nativeFailed:false,qualityTransfer:null,pendingWebSeek:null,listeners:[]};byElement.set(v,state);media.set(state.id,state);
@@ -417,7 +494,7 @@
         // src assignment may have already announced this transition before the queued emptied.
         if(!state.awaitingSource||declared!==state.declared||(url&&url!==state.url))sourceChanged(state,url,declared);
         state.actual='';});
-      listen('play',e=>{if(state.syncEvent===e||state.attached)return;inspect(v);report(state,'play',
+      listen('play',e=>{if(!e.isTrusted||v.paused||state.syncEvent===e||state.attached)return;inspect(v);report(state,'play',
         {userInitiated:Date.now()>=state.suppressPlayUntil&&isUserPlay(state)});});
       ['pause','ended'].forEach(name=>listen(name,e=>{if(state.syncEvent!==e&&!state.attached)report(state,'stop',{reason:name});}));
       // Paused videos do not need a polling loop, but their controls can still change.
@@ -436,7 +513,7 @@
     const poster=posterOf(v);
     resource(state.url,'','网页媒体',{width:state.awaitingSource?0:v.videoWidth||0,height:state.awaitingSource?0:v.videoHeight||0,poster});
     v.querySelectorAll('source').forEach(s=>resource(s.src,s.type,'媒体源',{poster}));
-    const signature=JSON.stringify([state.url,state.awaitingSource,v.videoWidth||0,v.videoHeight||0,sessionState(state).duration,posterOf(v),qualitySources(state)]);
+    const signature=encode([state.url,state.awaitingSource,v.videoWidth||0,v.videoHeight||0,sessionState(state).duration,posterOf(v),qualitySources(state)]);
     if(signature!==state.metadataSignature){state.metadataSignature=signature;report(state,'media');}
     if(added&&!v.paused&&!v.ended)report(state,'play');return state;
   }
@@ -469,7 +546,7 @@
         const transformed=frameGeometry(frame,event);if(!transformed)return;
         const previous=session.targets.get(key);
         if(!previous||geometrySignature(previous)!==geometrySignature(transformed)){
-          transformed.type='layout';session.targets.set(key,transformed);route(transformed);
+          transformed.type='project';session.targets.set(key,transformed);project(transformed);
         }
       });
     });postChildren({__websurfLayout:true});
@@ -484,7 +561,7 @@
     if(!value||typeof value!=='object')return false;
     if(value.action==='theme'&&typeof value.dark==='boolean'){setTheme(value.dark);return true;}
     if(value.action==='probe'&&!value.documentId){media.forEach(state=>report(state,'media'));layouts();postChildren({__websurfCommand:true,command:value});return true;}
-    if(value.documentId!==documentId){postChildren({__websurfCommand:true,command:value});return false;}
+    if(value.documentId!==documentId)return false;
     const state=media.get(String(value.mediaId));
     if(!state||!state.element.isConnected)return false;
     inspect(state.element);
@@ -506,22 +583,26 @@
   window.__websurf={scan,command,documentId};
   window.addEventListener('message',e=>{
     const data=e.data;if(!data||typeof data!=='object')return;
-    if(e.source===window.parent&&window.parent!==window){if(data.__websurfCommand===true)command(data.command);if(data.__websurfLayout===true)scheduleLayout();if(data.__websurfHandshake===true)hello();return;}
+    if(e.source===window.parent&&window.parent!==window){if(data.__websurfCommand===true&&data.command&&data.command.action==='theme')setTheme(!!data.command.dark);if(data.__websurfLayout===true)scheduleLayout();if(data.__websurfHandshake===true)hello();return;}
     if(data.__websurfEvent!==true||!data.event||!data.event.mediaId)return;
     checkFrames();const frame=frames().find(f=>f.contentWindow===e.source);if(!frame)return;
     let session=frameSessions.get(frame);
     if(!session){session={source:frameSource(frame),targets:new Map(),inputs:new Map(),blockedDocuments:new Set()};frameSessions.set(frame,session);
       if(explicitDark!==null){try{frame.contentWindow.postMessage({__websurfCommand:true,command:{action:'theme',dark:explicitDark}},'*');}catch(_){}}}
     if(session.blockedDocuments.has(data.event.documentId))return;
-    const transformed=frameGeometry(frame,data.event);
+    if(data.event.type!=='project'&&data.event.type!=='unproject')return;
+    const input=projection(data.event);
+    const transformed=frameGeometry(frame,input);
     if(transformed){
       const key=transformed.documentId+'|'+transformed.mediaId;
-      if(transformed.type==='removed'){session.targets.delete(key);session.inputs.delete(key);}else{session.targets.set(key,transformed);session.inputs.set(key,data.event);}
-      route(transformed);
+      if(transformed.type==='unproject'){session.targets.delete(key);session.inputs.delete(key);}else{
+        if(!session.targets.has(key)&&session.targets.size>=100)return;
+        session.targets.set(key,transformed);session.inputs.set(key,input);}
+      project(transformed);
     }
   });
   function noteGesture(e){
-    if(!e.isTrusted||(e.type==='keydown'&&![' ','Enter','MediaPlayPause'].includes(e.key)))return;
+    if(e!==trustedEvent||!e.isTrusted||(e.type==='keydown'&&![' ','Enter','MediaPlayPause'].includes(e.key)))return;
     const path=e.composedPath?e.composedPath():[e.target];let target=path.find(node=>byElement.has(node));
     if(!target){for(let node=e.target;node&&node!==document.body&&node!==document.documentElement;node=node.parentElement){
       if(!node.querySelectorAll)continue;const candidates=Array.from(node.querySelectorAll('video,audio'));
@@ -530,7 +611,7 @@
     if(!target&&Number.isFinite(e.clientX)&&Number.isFinite(e.clientY)){
       const matches=Array.from(media.values()).filter(state=>{const r=state.element.getBoundingClientRect();return e.clientX>=r.left&&e.clientX<=r.right&&e.clientY>=r.top&&e.clientY<=r.bottom;});
       if(matches.length===1)target=matches[0].element;
-    }gesture={element:target||null,at:Date.now()};
+    }gesture={element:target||null,at:Date.now(),event:e};
   }
   ['pointerdown','click','touchstart','keydown'].forEach(name=>document.addEventListener(name,noteGesture,true));
   // Decoder events are replaced only on the attached element. Sync events still reach ad SDKs.
@@ -544,7 +625,13 @@
   },true));
   window.addEventListener('scroll',scheduleLayout,true);window.addEventListener('resize',scheduleLayout);
   if(window.visualViewport){window.visualViewport.addEventListener('resize',scheduleLayout);window.visualViewport.addEventListener('scroll',scheduleLayout);}
-  window.addEventListener('pagehide',e=>{if(e.persisted){media.forEach(state=>release(state,{button:true}));return;}media.forEach(forget);disposed=true;});
+  window.addEventListener('pagehide',e=>{
+    if(!e.isTrusted)return;
+    if(e.persisted){media.forEach(state=>release(state,{button:true}));return;}
+    media.forEach(forget);
+    if(window.parent!==window&&seal&&epoch!==null)emit({type:'goodbye'});
+    disposed=true;
+  });
   window.addEventListener('pageshow',e=>{if(e.persisted){epoch=null;queued.length=0;hello();scan();}});
   const originalFetch=window.fetch;
   if(originalFetch)window.fetch=function(){return originalFetch.apply(this,arguments).then(response=>{resource(response.url,response.headers.get('content-type'),'Fetch');return response;});};

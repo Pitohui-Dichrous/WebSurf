@@ -91,6 +91,17 @@ public final class ResourceArtworkTest {
   }
 
   @Test
+  public void malformedFixtureInputLeavesArtworkResponderAvailable() throws Exception {
+    assertEquals("HTTP/1.1 400 Bad Request", FixtureHttp.probeStatus(server.socket, "malformed"));
+    // This fixture serves full images regardless of Range.
+    assertEquals(
+        "HTTP/1.1 200 OK",
+        FixtureHttp.probeStatus(server.socket, "GET /wide.png HTTP/1.1\r\nRange: bytes=oops"));
+    assertEquals(
+        "HTTP/1.1 200 OK", FixtureHttp.probeStatus(server.socket, "GET /wide.png HTTP/1.1"));
+  }
+
+  @Test
   public void audioAndDocumentArtworkKeepRowActionsWithoutPreviewRequests() throws Exception {
     AtomicInteger actions = new AtomicInteger();
     for (boolean dark : new boolean[] {false, true}) {
@@ -449,7 +460,7 @@ public final class ResourceArtworkTest {
   }
 
   private static final class Fixture implements AutoCloseable {
-    final ServerSocket socket = new ServerSocket(0);
+    final ServerSocket socket = FixtureHttp.listen();
     final ExecutorService pool = Executors.newCachedThreadPool();
     volatile CountDownLatch requested = new CountDownLatch(1), release = new CountDownLatch(1);
     final AtomicInteger mediaRequests = new AtomicInteger(), previewRequests = new AtomicInteger();
@@ -501,9 +512,8 @@ public final class ResourceArtworkTest {
         BufferedReader reader =
             new BufferedReader(
                 new InputStreamReader(connection.getInputStream(), StandardCharsets.US_ASCII));
-        String first = reader.readLine();
-        if (first == null) return;
-        String path = first.split(" ")[1].split("\\?", 2)[0];
+        OutputStream output = connection.getOutputStream();
+        String path = FixtureHttp.requestTarget(reader, output).split("\\?", 2)[0];
         while (true) {
           String line = reader.readLine();
           if (line == null || line.isEmpty()) break;
@@ -532,7 +542,6 @@ public final class ResourceArtworkTest {
           status = "404 Not Found";
           body = new byte[0];
         }
-        OutputStream output = connection.getOutputStream();
         output.write(
             ("HTTP/1.1 "
                     + status

@@ -308,7 +308,6 @@ public final class BrowserNavigationSettingsTest {
                     .findFirst()
                     .orElseThrow();
             a.openTarget(a.current, target, true);
-            a.player.setRepeatMode(Player.REPEAT_MODE_ONE);
             return null;
           });
       await(
@@ -323,6 +322,7 @@ public final class BrowserNavigationSettingsTest {
                           && a.activeTarget != null));
       ui(
           a -> {
+            a.player.setRepeatMode(Player.REPEAT_MODE_ONE);
             a.setPlayerMode(mode);
             a.hideKeyboard();
             return null;

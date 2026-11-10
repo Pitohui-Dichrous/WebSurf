@@ -59,6 +59,60 @@ public final class MediaTransferCacheTest {
   }
 
   @Test
+  public void parsedHlsResourcesFollowTheirOwnManifestTransport() throws Exception {
+    var parser = new NetworkHlsParserFactory().createPlaylistParser();
+    String keyAndSegment =
+        "#EXTM3U\n#EXT-X-TARGETDURATION:10\n"
+            + "#EXT-X-KEY:METHOD=AES-128,URI=\"https://secure.example/key\"\n"
+            + "#EXTINF:10,\nhttp://plain.example/segment.ts\n#EXT-X-ENDLIST\n";
+    byte[] manifest = keyAndSegment.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    parser.parse(Uri.parse("http://plain.example/index.m3u8"), new ByteArrayInputStream(manifest));
+    assertThrows(
+        IOException.class,
+        () ->
+            parser.parse(
+                Uri.parse("https://secure.example/index.m3u8"),
+                new ByteArrayInputStream(manifest)));
+    byte[] badKey =
+        keyAndSegment
+            .replace("https://secure.example/key", "content://private/item")
+            .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    assertThrows(
+        IOException.class,
+        () ->
+            parser.parse(
+                Uri.parse("http://plain.example/index.m3u8"), new ByteArrayInputStream(badKey)));
+  }
+
+  @Test
+  public void playbackTransportRefusesPrivateFileContentAndInlineDataForRemoteStreams()
+      throws Exception {
+    java.io.File file = java.io.File.createTempFile("remote-hls", ".mp4", context.getCacheDir());
+    try {
+      java.nio.file.Files.write(file.toPath(), new byte[] {1, 2, 3});
+      DataSource.Factory remote = MediaTransferCache.remotePlayback(context, source, headers);
+      for (Uri uri :
+          List.of(
+              Uri.fromFile(file),
+              Uri.parse("content://settings/system/ringtone"),
+              Uri.parse("data:audio/mp4;base64,AQID"),
+              Uri.parse("http://127.0.0.1:8765/health"))) {
+        DataSource data = remote.createDataSource();
+        try {
+          IOException blocked = assertThrows(IOException.class, () -> data.open(new DataSpec(uri)));
+          assertTrue(
+              "Should fail in media scheme policy: " + blocked,
+              blocked.getMessage().contains("HTTP"));
+        } finally {
+          data.close();
+        }
+      }
+    } finally {
+      file.delete();
+    }
+  }
+
+  @Test
   public void committedFragmentIsPlayableWhileTheDownloadStillHasUnreadBytes() throws Exception {
     byte[] bytes = bytes(3 * FRAGMENT, 11);
     TrackingInput network = new TrackingInput(bytes);

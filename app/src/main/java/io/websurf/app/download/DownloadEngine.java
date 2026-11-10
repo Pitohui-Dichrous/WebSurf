@@ -10,8 +10,8 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
 import android.provider.MediaStore;
-import android.webkit.CookieManager;
 import androidx.core.content.FileProvider;
+import io.websurf.app.MediaRequestPolicy;
 import io.websurf.app.MediaTransferCache;
 import java.io.BufferedInputStream;
 import java.io.ByteArrayOutputStream;
@@ -24,7 +24,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
-import java.net.URI;
 import java.net.URL;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
@@ -601,6 +600,8 @@ final class DownloadEngine {
   private Response connect(String address, HlsPlaylist.Range range, Validator validator, long total)
       throws IOException {
     String url = HlsPlaylist.resolve(address, "");
+    MediaRequestPolicy.requireNetwork(job.url, url);
+    Map<String, String> scopedHeaders = MediaRequestPolicy.headers(job.url, url, job.headers);
     for (int redirects = 0; redirects < 8; redirects++) {
       check();
       HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
@@ -609,33 +610,8 @@ final class DownloadEngine {
       c.setReadTimeout(20000);
       c.setInstanceFollowRedirects(false);
       c.setRequestProperty("Accept-Encoding", "identity");
-      boolean capturedCookie = false;
-      for (Map.Entry<String, String> h : job.headers.entrySet()) {
-        String name = h.getKey();
-        if (name.equalsIgnoreCase("Cookie") || name.equalsIgnoreCase("Authorization")) {
-          if (!sameOrigin(job.url, url)) continue;
-        }
-        if (name.equalsIgnoreCase("Host")
-            || name.equalsIgnoreCase("Content-Length")
-            || name.equalsIgnoreCase("Range")
-            || name.equalsIgnoreCase("If-Range")
-            || name.equalsIgnoreCase("If-None-Match")
-            || name.equalsIgnoreCase("If-Modified-Since")
-            || name.equalsIgnoreCase("X-WebSurf-Transfer-Scope")
-            || name.equalsIgnoreCase("Accept-Encoding")) continue;
-        if (name.contains("\r")
-            || name.contains("\n")
-            || h.getValue().contains("\r")
-            || h.getValue().contains("\n")) continue;
-        c.setRequestProperty(name, h.getValue());
-        if (name.equalsIgnoreCase("Cookie")) capturedCookie = true;
-      }
-      try {
-        String cookies = CookieManager.getInstance().getCookie(url);
-        if (!capturedCookie && cookies != null && !cookies.isEmpty())
-          c.setRequestProperty("Cookie", cookies);
-      } catch (RuntimeException ignored) {
-      }
+      for (Map.Entry<String, String> h : scopedHeaders.entrySet())
+        c.setRequestProperty(h.getKey(), h.getValue());
       if (validator != null) c.setRequestProperty("If-Range", validator.value);
       if (range != null)
         c.setRequestProperty(
@@ -651,7 +627,9 @@ final class DownloadEngine {
         String location = c.getHeaderField("Location");
         disconnect(c);
         if (location == null) throw new IOException("下载重定向缺少地址");
-        url = HlsPlaylist.resolve(url, location);
+        String next = HlsPlaylist.resolve(url, location);
+        scopedHeaders = MediaRequestPolicy.headers(url, next, scopedHeaders);
+        url = next;
         continue;
       }
       if (code < 200 || code >= 300) {
@@ -693,21 +671,6 @@ final class DownloadEngine {
   private void disconnect(HttpURLConnection connection) {
     activeConnections.remove(connection);
     connection.disconnect();
-  }
-
-  private static boolean sameOrigin(String a, String b) {
-    try {
-      URI x = URI.create(a), y = URI.create(b);
-      int xp =
-          x.getPort() == -1 ? ("https".equalsIgnoreCase(x.getScheme()) ? 443 : 80) : x.getPort();
-      int yp =
-          y.getPort() == -1 ? ("https".equalsIgnoreCase(y.getScheme()) ? 443 : 80) : y.getPort();
-      return x.getScheme().equalsIgnoreCase(y.getScheme())
-          && x.getHost().equalsIgnoreCase(y.getHost())
-          && xp == yp;
-    } catch (RuntimeException e) {
-      return false;
-    }
   }
 
   private final class Response implements Closeable {

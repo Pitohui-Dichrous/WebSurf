@@ -386,14 +386,12 @@ public final class DownloadSettingsProgressTest {
         BufferedReader in =
             new BufferedReader(
                 new InputStreamReader(socket.getInputStream(), StandardCharsets.US_ASCII));
-        String request = in.readLine();
-        if (request == null) return;
-        String path = request.split(" ")[1];
+        OutputStream out = socket.getOutputStream();
+        String path = FixtureHttp.requestTarget(in, out);
         String range = null, line;
         while ((line = in.readLine()) != null && !line.isEmpty())
           if (line.toLowerCase(java.util.Locale.ROOT).startsWith("range:"))
             range = line.substring(6).trim();
-        OutputStream out = socket.getOutputStream();
         if (!path.equals("/first.bin") && !path.equals("/next.bin")) {
           byte[] page =
               "<!doctype html><title>Download progress fixture</title>"
@@ -408,11 +406,9 @@ public final class DownloadSettingsProgressTest {
           return;
         }
         transfer = path.equals("/first.bin") ? first : next;
-        int start = 0, end = payload.length - 1;
+        FixtureHttp.Range slice = FixtureHttp.range(range, payload.length, false, out);
+        int start = slice.start(), end = slice.end();
         if (range != null) {
-          String[] positions = range.substring(6).split("-", 2);
-          start = Integer.parseInt(positions[0]);
-          if (positions.length > 1 && !positions[1].isEmpty()) end = Integer.parseInt(positions[1]);
           transfer.rangeRequests.incrementAndGet();
           int active = transfer.active.incrementAndGet();
           activeRange = true;

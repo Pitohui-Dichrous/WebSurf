@@ -8,6 +8,21 @@ import org.json.JSONObject;
 
 /** A snapshot of one DOM video, scoped to its document and source generation. */
 final class VideoTarget {
+  static final String[] LAYOUT_FIELDS = {
+    "rect",
+    "clip",
+    "contentClip",
+    "topScrollX",
+    "topScrollY",
+    "visualOffsetX",
+    "visualOffsetY",
+    "viewportWidth",
+    "viewportHeight",
+    "viewportScale",
+    "scrollPolicy",
+    "layoutRevision"
+  };
+  boolean checkingRemoval;
   String documentId, mediaId, url, page, title;
   long sourceVersion;
   double time, duration, rate, volume;
@@ -30,6 +45,19 @@ final class VideoTarget {
 
   String key() {
     return documentId + ":" + mediaId;
+  }
+
+  int retainedCharacters() {
+    int size =
+        documentId.length()
+            + mediaId.length()
+            + url.length()
+            + page.length()
+            + title.length()
+            + poster.length();
+    for (QualitySource q : qualitySources)
+      size += q.url().length() + q.mime().length() + q.label().length();
+    return size;
   }
 
   static VideoTarget read(JSONObject e, VideoTarget previous) {
@@ -78,11 +106,9 @@ final class VideoTarget {
             : previous == null || previous.nativeScrollFollow;
     t.layoutRevision = e.optLong("layoutRevision", previous == null ? 0 : previous.layoutRevision);
     t.poster = e.optString("poster", previous == null ? "" : previous.poster);
+    // Only the native decoder can authorize recovery onto the next source.
     t.nativeFailed =
-        e.optBoolean("nativeFailed")
-            || (previous != null
-                && previous.sourceVersion == t.sourceVersion
-                && previous.nativeFailed);
+        previous != null && previous.sourceVersion == t.sourceVersion && previous.nativeFailed;
     if (e.has("qualitySources")) {
       JSONArray values = e.optJSONArray("qualitySources");
       ArrayList<QualitySource> choices = new ArrayList<>();

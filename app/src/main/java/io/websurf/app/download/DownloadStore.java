@@ -66,6 +66,7 @@ public final class DownloadStore {
             .put("connections", connections)
             .put("completedParts", completedParts)
             .put("totalParts", totalParts)
+            .put("browserScopedHeaders", true)
             .put("headers", new JSONObject(headers));
       } catch (org.json.JSONException e) {
         throw new IllegalStateException(e);
@@ -97,6 +98,10 @@ public final class DownloadStore {
         java.util.Iterator<String> keys = h.keys();
         while (keys.hasNext()) {
           String k = keys.next();
+          if (!o.optBoolean("browserScopedHeaders")
+              && (k.equalsIgnoreCase("Cookie")
+                  || k.equalsIgnoreCase("Authorization")
+                  || k.equalsIgnoreCase("Referer"))) continue;
           j.headers.put(k, h.optString(k));
         }
       }

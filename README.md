@@ -11,11 +11,9 @@
 使用特殊播放器的网页不可以，油管别想啦
 
 <!-- release-version:start -->
-**WebSurf · 1.0.4**
+**WebSurf 1.0.4-dev.1** · 安全修复开发分支
 
-黑白与荧光绿、硬边色块、粗窄字体。
-
-**[下载 APK](https://github.com/Pitohui-Dichrous/WebSurf/releases/download/v1.0.4-main/WebSurf-1.0.4-main.apk)**
+[下载稳定版 1.0.4](https://github.com/Pitohui-Dichrous/WebSurf/releases/tag/v1.0.4-main)
 <!-- release-version:end -->
 
 ## 基本功能

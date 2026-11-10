@@ -100,7 +100,15 @@ public final class DirectMediaLinkTest {
   public void browserAttachmentRedirectPreservesAbsentReferrerAndOffersPlayback() throws Exception {
     // A trusted touch follows the browser's HTTP Referrer-Policy and invokes DownloadListener.
     tapExport();
-    clickText("播放视频");
+    await(
+        "Browser did not report the final attachment",
+        () ->
+            ui(
+                a -> {
+                  WebResource resource = a.current.resources.get(fixture.media() + "/clip.mp4");
+                  return resource != null && resource.requestHeadersCaptured;
+                }));
+    tapResourceAction("播放视频");
     awaitPlaying();
     WebResource resource = ui(a -> a.playing);
     assertTrue(ui(a -> resource.requestHeadersCaptured));
@@ -125,7 +133,28 @@ public final class DirectMediaLinkTest {
                     resource.mime));
     jobs.add(id);
     assertDownloaded(id);
-    assertTrue(fixture.browserRequests.get() > 0);
+    var hits = List.copyOf(fixture.hits);
+    Hit navigation =
+        hits.stream()
+            .filter(h -> h.path().equals("/export") && h.browser() && h.status().startsWith("302"))
+            .findFirst()
+            .orElseThrow();
+    assertFalse(navigation.agent().isBlank());
+    assertTrue(
+        hits.toString(),
+        hits.stream()
+            .anyMatch(
+                h -> h.path().equals("/clip.mp4") && h.browser() && h.status().startsWith("200")));
+    assertTrue(
+        hits.toString(),
+        hits.stream()
+            .anyMatch(
+                h ->
+                    h.path().equals("/clip.mp4")
+                        && !h.browser()
+                        && h.status().startsWith("2")
+                        && h.agent().equals(navigation.agent())));
+    assertTrue(hits.toString(), hits.stream().allMatch(h -> h.referrer().isEmpty()));
     assertEquals(0, fixture.rejected.get());
   }
 
@@ -206,11 +235,16 @@ public final class DirectMediaLinkTest {
                   }
                 }));
     assertTrue(ready.await(5, TimeUnit.SECONDS));
+    tapScreen(point[0], point[1]);
+  }
+
+  private void tapScreen(float x, float y) {
     var automation = InstrumentationRegistry.getInstrumentation().getUiAutomation();
     long now = SystemClock.uptimeMillis();
-    MotionEvent down = MotionEvent.obtain(now, now, MotionEvent.ACTION_DOWN, point[0], point[1], 0);
-    MotionEvent up =
-        MotionEvent.obtain(now, now + 80, MotionEvent.ACTION_UP, point[0], point[1], 0);
+    MotionEvent down = MotionEvent.obtain(now, now, MotionEvent.ACTION_DOWN, x, y, 0);
+    MotionEvent up = MotionEvent.obtain(now, now + 80, MotionEvent.ACTION_UP, x, y, 0);
+    down.setSource(android.view.InputDevice.SOURCE_TOUCHSCREEN);
+    up.setSource(android.view.InputDevice.SOURCE_TOUCHSCREEN);
     try {
       assertTrue(automation.injectInputEvent(down, true));
       assertTrue(automation.injectInputEvent(up, true));
@@ -220,7 +254,7 @@ public final class DirectMediaLinkTest {
     }
   }
 
-  private void clickText(String text) throws Exception {
+  private void tapResourceAction(String text) throws Exception {
     await(
         "Media action was not available",
         () -> {
@@ -228,11 +262,15 @@ public final class DirectMediaLinkTest {
               InstrumentationRegistry.getInstrumentation()
                   .getUiAutomation()
                   .getRootInActiveWindow();
-          if (root == null) return false;
+          // The browser toolbar also contains this label. Wait for the attachment action dialog.
+          if (root == null || root.findAccessibilityNodeInfosByText("复制链接").isEmpty()) return false;
           for (AccessibilityNodeInfo node : root.findAccessibilityNodeInfosByText(text)) {
             if (text.contentEquals(node.getText() == null ? "" : node.getText())) {
-              while (node != null && !node.isClickable()) node = node.getParent();
-              if (node != null) return node.performAction(AccessibilityNodeInfo.ACTION_CLICK);
+              android.graphics.Rect bounds = new android.graphics.Rect();
+              node.getBoundsInScreen(bounds);
+              if (!node.isVisibleToUser() || bounds.isEmpty()) continue;
+              tapScreen(bounds.centerX(), bounds.centerY());
+              return true;
             }
           }
           return false;
@@ -255,13 +293,16 @@ public final class DirectMediaLinkTest {
       if (ready.get()) return;
       SystemClock.sleep(80);
     } while (SystemClock.elapsedRealtime() < until);
-    fail(message);
+    fail(message + "; fixture requests=" + fixture.hits);
   }
 
+  private record Hit(String path, boolean browser, String status, String referrer, String agent) {}
+
   private final class Fixture implements AutoCloseable {
-    final ServerSocket pageSocket = new ServerSocket(0), mediaSocket = new ServerSocket(0);
+    final List<Hit> hits = new CopyOnWriteArrayList<>();
+    final ServerSocket pageSocket = FixtureHttp.listen(), mediaSocket = FixtureHttp.listen();
     final ExecutorService pool = Executors.newCachedThreadPool();
-    final AtomicInteger rejected = new AtomicInteger(), browserRequests = new AtomicInteger();
+    final AtomicInteger rejected = new AtomicInteger();
     final byte[] video;
     volatile boolean closed;
 
@@ -332,7 +373,6 @@ public final class DirectMediaLinkTest {
           status = "403 Forbidden";
           body = new byte[0];
         } else if (path.equals("/export")) {
-          if (headers.containsKey("sec-fetch-mode")) browserRequests.incrementAndGet();
           status = "302 Found";
           extra = "Location: /clip.mp4\r\n";
           body = new byte[0];
@@ -351,6 +391,14 @@ public final class DirectMediaLinkTest {
               "Accept-Ranges: bytes\r\n"
                   + "Content-Disposition: attachment; filename=\"fixture.mp4\"\r\n";
         }
+        if (isMedia)
+          hits.add(
+              new Hit(
+                  path,
+                  headers.containsKey("sec-fetch-mode"),
+                  status,
+                  headers.getOrDefault("referer", ""),
+                  headers.getOrDefault("user-agent", "")));
         OutputStream out = connection.getOutputStream();
         out.write(
             ("HTTP/1.1 "

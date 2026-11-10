@@ -56,7 +56,6 @@ public final class ScrollPlaybackTest {
                   .findFirst()
                   .orElseThrow();
           a.openTarget(a.current, target, true);
-          a.player.setRepeatMode(Player.REPEAT_MODE_ONE);
           return null;
         });
     await(
@@ -73,6 +72,11 @@ public final class ScrollPlaybackTest {
                         && a.videoChrome.isShown()
                         && a.hasWindowFocus()
                         && !a.current.web.isLayoutRequested()));
+    ui(
+        a -> {
+          a.player.setRepeatMode(Player.REPEAT_MODE_ONE);
+          return null;
+        });
   }
 
   @After

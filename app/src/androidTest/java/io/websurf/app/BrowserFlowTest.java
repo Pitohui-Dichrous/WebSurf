@@ -37,8 +37,8 @@ import org.junit.runner.RunWith;
 
 /**
  * Real WebView + Media3 integration against scripts/fixture_server.py. Required: adb -s <emulator>
- * reverse tcp:8765 tcp:8765 before instrumentation. Playback is triggered by real pointer events,
- * never fabricated observer messages. JavaScript callbacks are awaited off the UI thread.
+ * reverse tcp:8765 tcp:8765 before instrumentation. Playback is triggered by real pointer events.
+ * JavaScript callbacks are awaited off the UI thread.
  */
 @RunWith(AndroidJUnit4.class)
 public final class BrowserFlowTest {
@@ -89,6 +89,78 @@ public final class BrowserFlowTest {
       if (hadAutoPlay) edit.putBoolean("auto_play", originalAutoPlay);
       else edit.remove("auto_play");
       edit.commit();
+    }
+  }
+
+  @Test
+  public void nativeRequestsRespectBrowserCookieContext() throws Exception {
+    String suffix = "/public/sample-360.mp4?policy=" + System.nanoTime();
+    String include = BASE + suffix + "-include", omit = BASE + suffix + "-omit";
+    String cross = BASE.replace("127.0.0.1", "localhost") + suffix;
+    String media = stringJs("document.getElementById('video').currentSrc");
+    var jar = android.webkit.CookieManager.getInstance();
+    jar.setCookie(cross, "websurf_other=strict; SameSite=Strict; Path=/");
+    try {
+      js(
+          "fetch("
+              + JSONObject.quote(include)
+              + ",{credentials:'include'});"
+              + "fetch("
+              + JSONObject.quote(omit)
+              + ",{credentials:'omit'});"
+              + "fetch("
+              + JSONObject.quote(cross)
+              + ",{mode:'no-cors',credentials:'include'});");
+      for (String url : java.util.List.of(include, omit, cross, media)) {
+        await(
+            "No intercepted request for fixture URL " + url,
+            7000,
+            () ->
+                ui(
+                    a -> {
+                      WebResource r = a.current.resources.get(url);
+                      return r != null && r.requestHeadersCaptured;
+                    }));
+      }
+      await(
+          "Native bridge did not bind the first-party HTML video",
+          7000,
+          () ->
+              ui(
+                  a ->
+                      a.current.videos.values().stream()
+                          .anyMatch(
+                              v ->
+                                  v.url.equals(media)
+                                      && a.current.documents.containsKey(v.documentId))));
+      ui(
+          a -> {
+            Function<String, String> cookie =
+                url ->
+                    a.headersFor(a.current.resources.get(url)).entrySet().stream()
+                        .filter(e -> e.getKey().equalsIgnoreCase("Cookie"))
+                        .map(java.util.Map.Entry::getValue)
+                        .findFirst()
+                        .orElse("");
+            assertEquals("", cookie.apply(omit));
+            assertEquals("", cookie.apply(cross));
+            assertEquals(
+                MainActivity.supportsCookieIntercept(),
+                cookie.apply(include).contains("websurf_fixture=ready"));
+            assertTrue(
+                "Live first-party HTML media lost its session; request destination="
+                    + a.current.resources.get(media).requestDestination
+                    + ", top matches="
+                    + MediaRequestPolicy.sameOrigin(a.current.web.getUrl(), media)
+                    + ", owner matches="
+                    + a.current.videos.values().stream()
+                        .filter(v -> v.url.equals(media))
+                        .anyMatch(v -> a.current.documents.get(v.documentId).firstPartyTree),
+                cookie.apply(media).contains("websurf_fixture=ready"));
+            return null;
+          });
+    } finally {
+      jar.setCookie(cross, "websurf_other=; Max-Age=0; Path=/");
     }
   }
 
@@ -175,6 +247,113 @@ public final class BrowserFlowTest {
     assertSame(originalWeb, ui(activity -> activity.current.web));
     assertEquals(instance, stringJs("window.__fixture.instance"));
     assertEquals(marker, stringJs("document.getElementById('note').value"));
+  }
+
+  @Test
+  public void unrelatedTrustedClickCannotAuthorizeForgedBridgePlayback() throws Exception {
+    long epoch = ui(activity -> activity.current.epoch);
+    js(
+        "const b=document.createElement('button'); b.id='forge'; b.textContent='Fixture';"
+            + "document.body.prepend(b); b.onclick=e=>{window.forgedFromTrusted=e.isTrusted;"
+            + "const send=(type,extra)=>WebSurfObserver.postMessage(JSON.stringify({"
+            + "documentId:__websurf.documentId,epoch:"
+            + epoch
+            + ",page:location.href,mediaId:'987',"
+            + "sourceVersion:1,url:location.origin+'/fake-never-fetch.mp4',video:true,type,...extra}));"
+            + "send('input',{seal:'invented',action:'takeover'});"
+            + "send('takeover',{userInitiated:true});send('play',{userInitiated:true});};");
+    tapElement("forge");
+    assertTrue(boolJs("window.forgedFromTrusted"));
+    assertNoNativeFor(1000);
+    assertFalse(ui(a -> a.current.videos.values().stream().anyMatch(t -> t.mediaId.equals("987"))));
+    tapElement("play");
+    awaitNativeHeight(360);
+  }
+
+  @Test
+  public void inheritedDocumentCannotUseTopLevelUrlForUnsignedPreview() throws Exception {
+    js(
+        "const f=document.createElement('iframe');f.id='inherited-media';f.srcdoc='<video"
+            + " src=\"http://127.0.0.1:8765/public/sample-360.mp4?srcdoc-fixture\"></video>';"
+            + "document.body.prepend(f);");
+    await(
+        "Inherited HTTP origin did not report the srcdoc video",
+        10000,
+        () ->
+            ui(
+                a ->
+                    a.current.videos.values().stream()
+                        .anyMatch(
+                            t ->
+                                t.url.endsWith("?srcdoc-fixture") && (BASE + "/").equals(t.page))));
+    long epoch = ui(a -> a.current.epoch);
+    js(
+        "const w=document.getElementById('inherited-media').contentWindow;"
+            + "w.WebSurfObserver.postMessage(JSON.stringify({type:'resource',documentId:w.__websurf.documentId,"
+            + "epoch:"
+            + epoch
+            + ",url:location.origin+'/no-page-must-not-appear.png',mime:'image/png'}));");
+    SystemClock.sleep(300);
+    assertFalse(ui(a -> a.current.resources.containsKey(BASE + "/no-page-must-not-appear.png")));
+  }
+
+  @Test
+  public void rotatingOverOneHundredIframesStillAllowsNewVideoToTakeOver() throws Exception {
+    js(
+        "window.rotatedFrames=0; function next(){if(rotatedFrames===105)return;const"
+            + " f=document.createElement('iframe');f.srcdoc='<p>fixture</p>';"
+            + "f.onload=()=>{if(!f.contentWindow.__websurf)return;setTimeout(()=>{f.remove();rotatedFrames++;next()},0)};"
+            + " document.body.appendChild(f)}next();");
+    await(
+        "Rotating fixture iframes did not finish",
+        45000,
+        () -> numberJs("rotatedFrames").intValue() == 105);
+    assertTrue(ui(a -> a.current.documents.size() <= 100));
+    createDynamicFrame();
+    tapFrameElement("dynamic-frame", "frame-play");
+    awaitNativeHeight(360);
+    assertTrue(ui(a -> a.activeTarget.url.contains("slot=embedded")));
+  }
+
+  @Test
+  public void crossOriginFrameProjectsGeometryWithoutSignedPageOrMediaUrls() throws Exception {
+    js(
+        "window.framePackets=[]; var"
+            + " f=document.createElement('iframe');addEventListener('message',e=>{if(e.source===f.contentWindow"
+            + " && e.data.__websurfEvent)framePackets.push(e.data.event)}); f.id='foreign-fixture';"
+            + "f.src='http://localhost:8765/frame.html?token=fixture-document#private-fragment';"
+            + "document.body.prepend(f);");
+    await(
+        "Missing projected geometry",
+        10000,
+        () -> boolJs("framePackets.some(e=>e.type==='project' && !!e.rect && e.rect.width>0)"));
+    assertTrue(
+        boolJs(
+            "framePackets.every(e=>!('url' in e)&&!('page' in e)&&!('poster' in e)"
+                + "&&!('title' in e)&&!('qualitySources' in e))"));
+    String packets = stringJs("JSON.stringify(framePackets)");
+    for (String secret : List.of("fixture-document", "private-fragment", "slot=embedded"))
+      assertFalse(packets.contains(secret));
+    await(
+        "Owning frame's media is missing",
+        5000,
+        () ->
+            ui(
+                a ->
+                    a.current.videos.values().stream()
+                        .anyMatch(
+                            t ->
+                                t.url.contains(
+                                        "localhost:8765/protected/sample-360.mp4?slot=embedded")
+                                    && t.page.equals("http://localhost:8765/"))));
+    // The parent knows the public layout IDs and epoch. It cannot impersonate this child.
+    long epoch = ui(a -> a.current.epoch);
+    js(
+        "const target=framePackets.find(e=>e.type==='project');"
+            + "WebSurfObserver.postMessage(JSON.stringify({...target,type:'takeover',epoch:"
+            + epoch
+            + ",page:'http://localhost:8765/',url:'http://localhost:8765/forged.mp4',userInitiated:true}));");
+    assertNoNativeFor(800);
   }
 
   @Test
