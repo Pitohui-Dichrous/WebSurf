@@ -16,6 +16,7 @@ REQUIRED = {
     "docs/release-verification.json",
 }
 FOLDERS = ("app/src", "gradle", "scripts", "assets")
+BUILD_INPUTS = ("app/src/main", "app/src/release", "gradle")
 
 
 def git(root, *args):
@@ -36,6 +37,8 @@ def source_index(root):
         name = raw_name.decode("utf-8")
         parts = name.lower().split("/")
         if "__pycache__" in parts or "/screenshots/qa/" in "/" + name.lower() + "/":
+            if name.startswith(tuple(folder + "/" for folder in BUILD_INPUTS)):
+                raise ValueError("Excluded file in release build inputs: " + name)
             continue
         if ((name not in REQUIRED and not name.startswith(prefixes))
                 or "\\" in name or {".tools", "analysis", "build", ".gradle"}.intersection(parts)
@@ -50,11 +53,9 @@ def source_index(root):
     unstaged = git(root, "diff", "--no-ext-diff", "--name-only", "-z", "--", *paths)
     if entries.keys() & set(unstaged.decode("utf-8").split("\0")):
         raise ValueError("Stage the reviewed release source changes before packaging")
-    # Gradle compiles untracked production sources too. Never publish an archive that
-    # silently omits them, nor read them from the working tree to fill the gap.
-    if git(root, "ls-files", "--others", "--exclude-standard", "--directory",
-           "--no-empty-directory", "-z", "--", "app/src/main", "app/src/release", "gradle"):
-        raise ValueError("Stage all release build inputs before packaging")
+    # Android includes assets independently of Git's ignore rules.
+    if git(root, "ls-files", "--others", "--directory", "--no-empty-directory", "-z", "--", *BUILD_INPUTS):
+        raise ValueError("Stage all release build inputs or remove private files before packaging")
     return entries
 
 

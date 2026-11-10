@@ -218,7 +218,7 @@
     if (!value) return;
     let url; try {url=new URL(value,location.href).href;} catch (_) {return;}
     if (!/^https?:/i.test(url)) return;
-    const details=assign({referrerPolicy:documentPolicy()},extra||{});
+    const details=extra||{};
     const key=url+'|'+(mime||'')+'|'+source, signature=encode(details);
     if (sent.has(key)&&sent.get(key)===signature) return;
     if (sent.size>=500) sent.delete(sent.keys().next().value); sent.set(key,signature);
@@ -267,7 +267,7 @@
   function payload(state,type,extra) {
     const v=state.element;
     return assign({type,mediaId:state.id,sourceVersion:state.version,url:state.url,width:state.awaitingSource?0:v.videoWidth||0,height:state.awaitingSource?0:v.videoHeight||0,
-      title:document.title||'',referrerPolicy:documentPolicy(),poster:posterOf(v),qualitySources:qualitySources(state),nativeFailed:!!state.nativeFailed,video:v.tagName==='VIDEO',hasAudio:typeof v.mozHasAudio==='boolean'?v.mozHasAudio:
+      title:document.title||'',poster:posterOf(v),qualitySources:qualitySources(state),nativeFailed:!!state.nativeFailed,video:v.tagName==='VIDEO',hasAudio:typeof v.mozHasAudio==='boolean'?v.mozHasAudio:
         (v.audioTracks?v.audioTracks.length>0:(v.webkitAudioDecodedByteCount>0?true:null)),userInitiated:false,attached:state.attached},
       sessionState(state),geometry(v),extra||{});
   }
@@ -524,18 +524,16 @@
     report(state,'removed');release(state,{sourceChanged:true,button:false});
     state.listeners.forEach(([name,callback])=>state.element.removeEventListener(name,callback));media.delete(state.id);byElement.delete(state.element);
   }
-  function documentPolicy() {
-    const meta=document.querySelector('meta[name="referrer"]');return meta&&meta.content||'';
-  }
   function scan() {
     scanPending=false;if(disposed)return;checkFrames();media.forEach(state=>{if(!state.element.isConnected)forget(state);});
-    document.querySelectorAll('video,audio').forEach(inspect);document.querySelectorAll('img').forEach(i=>resource(i.currentSrc||i.src,'image/*','网页图片'));
+    document.querySelectorAll('video,audio').forEach(inspect);
+    document.querySelectorAll('img').forEach(i=>resource(i.currentSrc||i.src,'image/*','网页图片',{referrerPolicy:i.referrerPolicy||''}));
     document.querySelectorAll('a[href]').forEach(a=>{
       const url=httpUrl(a.href);if(!url)return;
       if(!a.hasAttribute('download')&&!/^(video|audio)\//i.test(a.type||'')&&!/\.(mp4|m4v|m3u8|webm|mov|mkv|flv|mp3|m4a|aac|wav|ogg|flac|opus)([?#]|$)/i.test(new URL(url).pathname))return;
-      // A native export has no browser request yet: do not invent a cross-origin page referrer.
-      // The actual request headers, when observed, take precedence over this conservative fallback.
-      const policy=/(^|\s)noreferrer(\s|$)/i.test(a.rel||'')?'no-referrer':a.referrerPolicy||documentPolicy()||(new URL(url).origin!==new URL(location.href).origin?'no-referrer':'');
+      // Only the element's own policy is observable here. The active document policy can come
+      // from an HTTP header or a meta element that the page subsequently removed or changed.
+      const policy=/(^|\s)noreferrer(\s|$)/i.test(a.rel||'')?'no-referrer':a.referrerPolicy||'';
       resource(url,a.type,'下载链接',{referrerPolicy:policy});
     });scheduleLayout();
   }

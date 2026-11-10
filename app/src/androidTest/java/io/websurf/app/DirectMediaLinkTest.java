@@ -106,6 +106,38 @@ public final class DirectMediaLinkTest {
   }
 
   @Test
+  public void headerOnlyNoReferrerIsPreservedForAnUnrequestedVideo() throws Exception {
+    // /page serves Referrer-Policy: no-referrer and has no referrer meta element.
+    String url = fixture.media() + "/clip.mp4";
+    scenario.onActivity(a -> a.current.web.evaluateJavascript(
+        "let video=document.createElement('video');video.preload='none';"
+            + "video.src='/clip.mp4';document.body.append(video);"
+            + "let link=document.createElement('a');link.href='/explicit.mp4';"
+            + "link.referrerPolicy='origin';document.body.append(link)", null));
+    await("Video and explicit link were not observed", () -> ui(a ->
+        a.current.videos.values().stream().anyMatch(v -> url.equals(v.url))
+            && a.current.resources.containsKey(fixture.media() + "/explicit.mp4")));
+    Map<String, String> headers = ui(a -> {
+      WebResource video = a.current.resources.get(url);
+      VideoTarget target = a.current.videos.values().stream()
+          .filter(v -> url.equals(v.url)).findFirst().get();
+      assertFalse(video.requestHeadersCaptured);
+      assertFalse(a.headersFor(video).containsKey("Referer"));
+      WebResource link = a.current.resources.get(fixture.media() + "/explicit.mp4");
+      assertFalse(link.requestHeadersCaptured);
+      assertEquals(fixture.media() + "/", a.headersFor(link).get("Referer"));
+      return a.playbackHeadersFor(video, target);
+    });
+    assertTrue(fixture.hits.isEmpty());
+    try (var response = NativeMediaHttp.get(url, url, headers.get(NativeMediaHttp.LOCAL_ORIGIN),
+        headers, "bytes=0-0", null, 3000, 3000).execute()) {
+      assertEquals(206, response.code());
+    }
+    assertTrue(fixture.hits.stream().anyMatch(hit ->
+        hit.path().equals("/clip.mp4") && !hit.browser() && hit.referrer().isEmpty()));
+  }
+
+  @Test
   public void nativePlaybackBlocksRedirectAndHlsSegmentOnOtherLoopbackPort() throws Exception {
     try (FixtureHttp.Canary privateService = new FixtureHttp.Canary()) {
       fixture.privateTarget = privateService.base() + "/private.ts";

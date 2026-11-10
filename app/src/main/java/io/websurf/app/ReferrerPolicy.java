@@ -37,8 +37,11 @@ public final class ReferrerPolicy {
           return full;
         case "no-referrer-when-downgrade":
           return downgrade ? "" : full;
-        default:
+        case "strict-origin-when-cross-origin":
           return downgrade ? "" : same ? full : origin;
+        default:
+          // An unobserved request may inherit a stricter response-header policy.
+          return "";
       }
     } catch (Exception ignored) {
       return "";

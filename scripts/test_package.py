@@ -24,7 +24,7 @@ class SourcePackageTest(unittest.TestCase):
             path.parent.mkdir(exist_ok=True, parents=True)
             path.write_bytes(b"public source\n")
         (self.root / ".gitattributes").write_text("* -text\n")
-        (self.root / ".gitignore").write_text("/dist/\n/app/build/\n*.log\n")
+        (self.root / ".gitignore").write_text("/dist/\n/app/build/\n*.log\n*.jks\n")
         (self.root / "version.properties").write_text(
             "base=1.2.3\ncode=1\nchannel=main\nsequence=0\nbranch=main\n")
         self.version = "1.2.3-main"
@@ -98,6 +98,26 @@ class SourcePackageTest(unittest.TestCase):
         package(self.root)
         with zipfile.ZipFile(self.archive) as archive:
             self.assertEqual(archive.read("WebSurf/app/src/main/java/Helper.java"), b"class Helper {}")
+
+    def test_ignored_android_asset_prevents_publication(self):
+        for source_set, filename in (("main", "session.log"), ("release", "local.jks")):
+            with self.subTest(source_set=source_set, filename=filename):
+                asset = self.root / "app/src" / source_set / "assets" / filename
+                asset.parent.mkdir(parents=True)
+                asset.write_bytes(b"synthetic test input")
+                with self.assertRaisesRegex(ValueError, "release build inputs"):
+                    package(self.root)
+                self.assertFalse(self.archive.exists())
+                asset.unlink()
+
+    def test_excluded_artwork_cannot_enter_the_apk_as_a_tracked_asset(self):
+        asset = self.root / "app/src/main/assets/screenshots/qa/synthetic.png"
+        asset.parent.mkdir(parents=True)
+        asset.write_bytes(b"synthetic diagnostic")
+        self.git("add", str(asset.relative_to(self.root)))
+        with self.assertRaisesRegex(ValueError, "Excluded file in release build inputs"):
+            package(self.root)
+        self.assertFalse(self.archive.exists())
 
     def test_missing_and_unstaged_required_sources_abort_packaging(self):
         (self.root / "version.properties").write_bytes(b"unstaged edit")

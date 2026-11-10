@@ -20,17 +20,27 @@ public final class ReferrerPolicyTest {
   }
 
   @Test
-  public void browserDefaultReducesOriginsStripsFragmentsAndBlocksDowngrades() {
+  public void explicitStrictOriginWhenCrossOriginStripsFragmentsAndBlocksDowngrades() {
     String page = "https://page.example/a%2Fb?q=x%26y#fragment";
+    String policy = "strict-origin-when-cross-origin";
     assertEquals(
-        "https://page.example/", ReferrerPolicy.forRequest(page, "https://media.example/file", ""));
+        "https://page.example/", ReferrerPolicy.forRequest(page, "https://media.example/file", policy));
     assertEquals(
         "https://page.example/a%2Fb?q=x%26y",
-        ReferrerPolicy.forRequest(page, "https://page.example/file", ""));
-    assertEquals("", ReferrerPolicy.forRequest(page, "http://media.example/file", ""));
+        ReferrerPolicy.forRequest(page, "https://page.example/file", policy));
+    assertEquals("", ReferrerPolicy.forRequest(page, "http://media.example/file", policy));
     assertEquals(
         "",
         ReferrerPolicy.forRequest("file:///private", "https://media.example/file", "unsafe-url"));
+  }
+
+  @Test
+  public void unknownPolicyCannotSupplyAnUnobservedReferrer() {
+    String page = "https://page.example/private?key=1";
+    for (String policy : new String[] {null, "", "unknown"}) {
+      assertEquals("", ReferrerPolicy.forRequest(page, "https://page.example/file", policy));
+      assertEquals("", ReferrerPolicy.forRequest(page, "https://media.example/file", policy));
+    }
   }
 
   @Test

@@ -159,6 +159,22 @@ test('direct media links are observed without fetching or playing them and prese
   assert.equal(links.find(e=>e.url===opaque.href).referrerPolicy,'same-origin');assert.equal(h.events('play').length,0);
 });
 
+test('unrequested media never infer policy from a referrer meta snapshot',()=>{
+  const video=new Media(), h=harness({media:[video]});h.ack();
+  // A later no-referrer meta can be removed while an earlier unsafe-url meta remains in the DOM.
+  h.document.querySelector=()=>({content:'unsafe-url'});
+  const anchor=new Element('A');
+  Object.assign(anchor,{href:'https://page.example/export.mp4',referrerPolicy:'origin'});
+  h.links.push(anchor);h.scan();
+  const lastLink=()=>h.events('resource').filter(e=>e.url===anchor.href).at(-1);
+  assert.equal(lastLink().referrerPolicy,'origin');
+  anchor.referrerPolicy='';h.scan();
+  assert.equal(lastLink().referrerPolicy,'');
+  video.src='https://page.example/fresh.mp4';h.scan();
+  assert.equal(h.events('source').at(-1).referrerPolicy,undefined);
+  assert.equal(h.events('resource').filter(e=>e.url===video.src).at(-1).referrerPolicy,undefined);
+});
+
 test('handshake queues data, ignores a foreign ack, and flushes exactly once with document epoch',()=>{
   const h=harness({media:[new Media({playing:true})]});assert.deepEqual(h.messages.map(e=>e.type),['hello']);
   h.ack(90,'foreign');assert.equal(h.events('play').length,0);h.ack(7);

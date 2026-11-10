@@ -69,20 +69,20 @@ public final class FrameReferrerTest {
       await(scene, "top video and explicit link", a ->
           target(a, media, true) != null && a.current.resources.containsKey(ordinary));
       assertEquals(topPage, ui(scene, a -> referrer(a.headersFor(a.current.resources.get(ordinary)))));
-      assertEquals(TOP + "/", ui(scene, a -> referrer(a.headersFor(a.current.resources.get(media)))));
+      assertNull(ui(scene, a -> referrer(a.headersFor(a.current.resources.get(media)))));
       script(scene, "frames[0].postMessage('rescan','*')");
       await(scene, "child's second observation", a ->
           (childOrigin + "/").equals(referrer(a.headersFor(a.current.resources.get(media))))
               && !a.current.resources.get(media).documentReferrer.main());
 
       Map<String, String> playback = ui(scene, a -> playback(a, media, true));
-      assertEquals(TOP + "/", referrer(playback));
+      assertNull(referrer(playback));
       // Grant only this test transport access to the local responder standing in for a CDN.
       // Exercise the native media GET with the selected video's actual playback headers.
       try (var response = NativeMediaHttp.get(media, media, MEDIA, playback, "bytes=0-0",
           null, 3000, 3000).execute()) {
         assertEquals(206, response.code());
-        assertEquals(TOP + "/", response.networkResponse().request().header("Referer"));
+        assertNull(response.networkResponse().request().header("Referer"));
       }
 
       script(scene, "frames[0].postMessage('capture','*')");
