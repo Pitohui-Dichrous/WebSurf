@@ -45,6 +45,39 @@ final class BrowserTab {
 
   // Only a freshly constructed WebView with an app-selected starting URL has this record.
   String initialPage;
+  // Only an app-owned navigation can authorize this exact LAN origin. WebView redirects,
+  // popups and resource observations cannot create a grant.
+  String localOrigin = "";
+  private String pendingLocalAddress = "";
+  private long localAddressAt;
+
+  void selectNativeOrigin(String address) {
+    localOrigin =
+        NativeMediaHttp.isLocalOriginCandidate(address)
+            ? ReferrerPolicy.forRequest(address, address, "origin")
+            : "";
+    pendingLocalAddress = localOrigin.isEmpty() ? "" : address.split("#", 2)[0];
+    localAddressAt = android.os.SystemClock.elapsedRealtime();
+  }
+
+  void restrictPendingAddress(String nextUrl) {
+    if (nextUrl == null || !pendingLocalAddress.equals(nextUrl.split("#", 2)[0]))
+      pendingLocalAddress = "";
+  }
+
+  String consumeLocalAttachment(String requestedUrl) {
+    String pending = pendingLocalAddress;
+    pendingLocalAddress = "";
+    return localDocument(requestedUrl)
+            && pending.equals(requestedUrl.split("#", 2)[0])
+            && android.os.SystemClock.elapsedRealtime() - localAddressAt < 60_000
+        ? localOrigin
+        : "";
+  }
+
+  boolean localDocument(String address) {
+    return !localOrigin.isEmpty() && MediaRequestPolicy.sameOrigin(localOrigin, address);
+  }
 
   boolean isInitialPage(String url) {
     return MediaRequestPolicy.sameOrigin(initialPage, url)
@@ -74,6 +107,8 @@ final class BrowserTab {
   private final LinkedHashMap<String, String> mediaCookies = new LinkedHashMap<>();
 
   void beginDocument(String page) {
+    restrictPendingAddress(page);
+    if (!localDocument(page)) localOrigin = "";
     mediaCookies.keySet().removeIf(url -> !MediaRequestPolicy.sameOrigin(page, url));
   }
 

@@ -3,9 +3,7 @@ package io.websurf.app;
 import static org.junit.Assert.*;
 
 import android.content.Context;
-import android.content.Intent;
 import android.graphics.Rect;
-import android.net.Uri;
 import android.os.Bundle;
 import android.os.SystemClock;
 import android.view.MotionEvent;
@@ -36,9 +34,8 @@ public final class ScrollPlaybackTest {
   public void openScrollingVideo() throws Exception {
     Context context = ApplicationProvider.getApplicationContext();
     scenario =
-        ActivityScenario.launch(
-            new Intent(context, MainActivity.class)
-                .setData(Uri.parse("http://127.0.0.1:8765/scroll.html?run=" + System.nanoTime())));
+        FixtureHttp.launchHomepage(
+            context, "http://127.0.0.1:8765/scroll.html?run=" + System.nanoTime());
     await(
         "Scrolling fixture video was not discovered",
         10000,

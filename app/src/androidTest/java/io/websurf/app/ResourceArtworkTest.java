@@ -4,14 +4,12 @@ import static org.junit.Assert.*;
 
 import android.animation.ValueAnimator;
 import android.content.Context;
-import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.drawable.Animatable;
 import android.graphics.drawable.Drawable;
-import android.net.Uri;
 import android.os.SystemClock;
 import android.view.View;
 import android.view.ViewGroup;
@@ -64,9 +62,7 @@ public final class ResourceArtworkTest {
     oldDark = appearance.getBoolean("dark", true);
     assertTrue(browser.edit().putBoolean("auto_play", false).commit());
     server = new Fixture();
-    scenario =
-        ActivityScenario.launch(
-            new Intent(context, MainActivity.class).setData(Uri.parse(server.base() + "/page")));
+    scenario = FixtureHttp.launchHomepage(context, server.base() + "/page");
     await("Isolated page did not load", () -> ui(a -> a.current.web.getProgress() == 100));
   }
 
@@ -240,7 +236,11 @@ public final class ResourceArtworkTest {
                 image.title = "异步预览";
                 ResourceRow result =
                     new ResourceRow(
-                        a, image, a.previewLoader, Map.of(), rowActions::incrementAndGet);
+                        a,
+                        image,
+                        a.previewLoader,
+                        Map.of(NativeMediaHttp.LOCAL_ORIGIN, server.base() + "/"),
+                        rowActions::incrementAndGet);
                 body.addView(result);
                 return result;
               });
@@ -315,7 +315,12 @@ public final class ResourceArtworkTest {
                       new WebResource(server.base() + "/" + name + ".png?theme=" + theme);
                   image.title = name + " 不透明缩略图";
                   ResourceRow result =
-                      new ResourceRow(a, image, a.previewLoader, Map.of(), () -> {});
+                      new ResourceRow(
+                          a,
+                          image,
+                          a.previewLoader,
+                          Map.of(NativeMediaHttp.LOCAL_ORIGIN, server.base() + "/"),
+                          () -> {});
                   body.addView(result);
                   return result;
                 });

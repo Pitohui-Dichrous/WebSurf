@@ -1,5 +1,8 @@
 package io.websurf.app;
 
+import android.content.Context;
+import android.content.SharedPreferences;
+import androidx.test.core.app.ActivityScenario;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
@@ -8,6 +11,7 @@ import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -18,8 +22,57 @@ public final class FixtureHttp {
 
   private FixtureHttp() {}
 
+  static ActivityScenario<MainActivity> launchHomepage(Context context, String url) {
+    SharedPreferences prefs = context.getSharedPreferences("browser", Context.MODE_PRIVATE);
+    String previous = prefs.getString("homepage", null);
+    prefs.edit().putString("homepage", url).commit();
+    try {
+      return ActivityScenario.launch(MainActivity.class);
+    } finally {
+      prefs.edit().putString("homepage", previous).commit();
+    }
+  }
+
   public static ServerSocket listen() throws IOException {
     return new ServerSocket(0, 32, InetAddress.getByName("127.0.0.1"));
+  }
+
+  /** Counts connections before reading any bytes, including aborted HTTP requests. */
+  public static final class Canary implements AutoCloseable {
+    private final ServerSocket socket;
+    public final AtomicInteger connections = new AtomicInteger();
+
+    public Canary() throws IOException {
+      socket = listen();
+      Thread listener =
+          new Thread(
+              () -> {
+                while (!socket.isClosed()) {
+                  try (Socket client = socket.accept()) {
+                    connections.incrementAndGet();
+                    client
+                        .getOutputStream()
+                        .write(
+                            "HTTP/1.1 410 Gone\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                                .getBytes(StandardCharsets.US_ASCII));
+                  } catch (IOException closedOrDisconnected) {
+                    // Closing the listener or a client is expected during teardown.
+                  }
+                }
+              },
+              "websurf-http-canary");
+      listener.setDaemon(true);
+      listener.start();
+    }
+
+    public String base() {
+      return "http://127.0.0.1:" + socket.getLocalPort();
+    }
+
+    @Override
+    public void close() throws IOException {
+      socket.close();
+    }
   }
 
   public static String probeStatus(ServerSocket server, String request) throws IOException {

@@ -127,13 +127,22 @@ public class MainActivity extends Activity {
       uploadRequestCode = state.getInt("uploadRequestCode", 40);
       ArrayList<String> urls = state.getStringArrayList("tabs");
       if (urls != null) {
-        for (String url : urls.subList(0, Math.min(8, urls.size())))
-          newTab(WebResource.isHttp(url) ? url : "about:blank", false);
+        boolean[] local = state.getBooleanArray("localMediaTabs");
+        for (int i = 0; i < Math.min(8, urls.size()); i++) {
+          String url = urls.get(i);
+          newTab(
+              WebResource.isHttp(url) ? url : "about:blank",
+              false,
+              local != null && i < local.length && local[i]);
+        }
       }
       if (!tabs.isEmpty())
         selectTab(tabs.get(Math.max(0, Math.min(state.getInt("active"), tabs.size() - 1))));
     }
-    if (tabs.isEmpty()) newTab(WebResource.isHttp(initial) ? initial : homepage(), true);
+    if (tabs.isEmpty()) {
+      if (WebResource.isHttp(initial)) newTab(initial, true, false);
+      else newTab(homepage(), true);
+    }
     if (getIntent().getBooleanExtra("show_downloads", false)) handler.post(this::showDownloads);
   }
 
@@ -429,9 +438,15 @@ public class MainActivity extends Activity {
   }
 
   void navigate(String url) {
+    navigate(url, true);
+  }
+
+  private void navigate(String url, boolean fromBrowserControls) {
     if (current == null) return;
     closePlayer(false, false);
-    current.web.loadUrl(normalizeAddress(url, searchEngine()));
+    String address = normalizeAddress(url, searchEngine());
+    current.selectNativeOrigin(fromBrowserControls ? address : "");
+    current.web.loadUrl(address);
   }
 
   private void observePageGesture(WebView web, MotionEvent event) {
@@ -450,14 +465,19 @@ public class MainActivity extends Activity {
     scrollControls.observe(event);
   }
 
-  @SuppressWarnings("SetJavaScriptEnabled")
   BrowserTab newTab(String url, boolean select) {
+    return newTab(url, select, true);
+  }
+
+  @SuppressWarnings("SetJavaScriptEnabled")
+  private BrowserTab newTab(String url, boolean select, boolean fromBrowserControls) {
     if (tabs.size() >= 8) {
       toast("最多打开 8 个标签页");
       return null;
     }
     BrowserTab tab = new BrowserTab();
     tab.initialPage = url;
+    if (url != null && fromBrowserControls) tab.selectNativeOrigin(url);
     WebView w =
         new WebView(this) {
           @Override
@@ -524,6 +544,10 @@ public class MainActivity extends Activity {
     CookieManager.getInstance().setAcceptThirdPartyCookies(w, true);
     WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG);
     if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
+      final String requiredPrefix =
+          WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)
+              ? BridgeMessage.prefix(tab.startSeal)
+              : null;
       WebViewCompat.addWebMessageListener(
           w,
           "WebSurfObserver",
@@ -531,10 +555,10 @@ public class MainActivity extends Activity {
           (view, message, origin, isMain, reply) -> {
             if (!tabs.contains(tab)
                 || !WebResource.isHttp(origin.toString())
-                || message.getData() == null
-                || message.getData().length() > 32768) return;
+                || message.getType() != androidx.webkit.WebMessageCompat.TYPE_STRING) return;
             try {
-              JSONObject packet = new JSONObject(message.getData());
+              JSONObject packet = BridgeMessage.parse(message.getData(), requiredPrefix);
+              if (packet == null) return;
               JSONObject observation = packet.optJSONObject("observation");
               JSONObject event = observation == null ? packet : observation;
               String document = event.optString("documentId");
@@ -699,6 +723,8 @@ public class MainActivity extends Activity {
           @Override
           public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
             String url = request.getUrl().toString();
+            if (request.isForMainFrame()) tab.restrictPendingAddress(url);
+            if (request.isForMainFrame() && !tab.localDocument(url)) tab.localOrigin = "";
             if (WebResource.isHttp(url)) return false;
             if (request.hasGesture() && request.isForMainFrame()) {
               alert()
@@ -857,6 +883,15 @@ public class MainActivity extends Activity {
             // WebView does not expose the final GET of an attachment redirect. It must not
             // inherit an earlier URL's Cookie or acquire a previously absent Referer.
             BrowserTab.NavigationRequest request = tab.navigationRequest.getAndSet(null);
+            if (request != null
+                && request.epoch() == tab.epoch
+                && tab.localDocument(uri)
+                && tab.localDocument(request.url())
+                && tab.localDocument(tab.web.getUrl())) {
+              WebResource initiatingLink = tab.resources.get(request.url());
+              if (initiatingLink != null && initiatingLink.fromLocalDocument)
+                resource.fromLocalDocument = true;
+            }
             captureRequestHeaders(
                 resource,
                 request != null && request.epoch() == tab.epoch && uri.equals(request.url())
@@ -864,6 +899,18 @@ public class MainActivity extends Activity {
                     : Map.of(),
                 true);
             if (ua != null && !ua.isBlank()) resource.headers.put("User-Agent", ua);
+            String directOrigin = tab.consumeLocalAttachment(uri);
+            if (tab == current && !directOrigin.isEmpty()) {
+              // An attachment does not commit a document. Keep this explicit action separate
+              // from the previous page's sniffed rows, including rows for the same URL.
+              WebResource attachment = new WebResource(uri);
+              attachment.mime = resource.mime;
+              attachment.classify();
+              attachment.headers.putAll(headersFor(resource));
+              attachment.headers.put(NativeMediaHttp.LOCAL_ORIGIN, directOrigin);
+              attachment.frozenDownloadHeaders = true;
+              resource = attachment;
+            }
             if (resource.isVideo() || "音频".equals(resource.kind)) resourceActions(resource);
             else confirmDownload(resource);
           }
@@ -922,6 +969,14 @@ public class MainActivity extends Activity {
     String type = event.optString("type"),
         url = event.optString("url"),
         page = event.optString("page");
+    boolean local = tab.localDocument(url) && tab.localDocument(tab.url);
+    if (local) {
+      BrowserTab.Frame sender = tab.documents.get(event.optString("documentId"));
+      // A foreign embed cannot substitute metadata (such as artwork) for an authorized LAN item.
+      if (sender == null
+          || !(sender.main || sender.firstPartyTree)
+          || !tab.localDocument(sender.origin)) return;
+    }
     if ("resource".equals(type)) {
       WebResource found =
           observe(
@@ -933,6 +988,7 @@ public class MainActivity extends Activity {
               event.optInt("width"),
               event.optInt("height"),
               page);
+      if (found != null && local) found.fromLocalDocument = true;
       if (found != null && found.previewIdentity.isEmpty() && event.has("poster"))
         updatePoster(found, event.optString("poster"));
       if (found != null && event.has("referrerPolicy"))
@@ -962,6 +1018,7 @@ public class MainActivity extends Activity {
     WebResource resource =
         observe(
             tab, url, "video/*", "网页视频", Collections.emptyMap(), target.width, target.height, page);
+    if (resource != null && local) resource.fromLocalDocument = true;
     bindVideoResource(tab, target, resource, "takeover".equals(type));
     if (active
         && "attached".equals(type)
@@ -1090,6 +1147,10 @@ public class MainActivity extends Activity {
     r.source = source;
     r.seenAt = System.currentTimeMillis();
     r.pageUrl = page;
+    r.notePreviewContext(tab.url);
+    // For bridge observations the callback already validated this page against the WebKit
+    // sender's origin, including the inherited origin of about:srcdoc.
+    r.notePreviewContext(page);
     if (!"播放画面".equals(r.qualitySource)) {
       if (width > 0) r.width = width;
       if (height > 0) r.height = height;
@@ -1223,6 +1284,11 @@ public class MainActivity extends Activity {
   Map<String, String> headersFor(WebResource r) {
     Map<String, String> h = new LinkedHashMap<>(r.headers);
     if (r.frozenDownloadHeaders) return h;
+    if (r.fromLocalDocument
+        && current != null
+        && current.resources.get(r.url) == r
+        && current.localDocument(current.web.getUrl())
+        && current.localDocument(r.url)) h.put(NativeMediaHttp.LOCAL_ORIGIN, current.localOrigin);
     if (current != null
         && h.keySet().stream().noneMatch(name -> name.equalsIgnoreCase("User-Agent")))
       h.put("User-Agent", current.web.getSettings().getUserAgentString());
@@ -1470,7 +1536,8 @@ public class MainActivity extends Activity {
                   == C.CONTENT_TYPE_HLS;
       sources =
           hls
-              ? new androidx.media3.exoplayer.hls.HlsMediaSource.Factory(network)
+              ? new androidx.media3.exoplayer.hls.HlsMediaSource.Factory(
+                      HlsManifestInput.sources(network))
                   .setPlaylistParserFactory(new NetworkHlsParserFactory())
               : new DefaultMediaSourceFactory(network);
     }
@@ -2240,7 +2307,7 @@ public class MainActivity extends Activity {
               if (index == 0) {
                 if (activeSheet != null) activeSheet.dismiss();
                 if (r.isVideo() || "音频".equals(r.kind)) openPlayer(r, 0);
-                else navigate(r.url);
+                else navigate(r.url, false);
               } else if (index == 1) confirmDownload(r);
               else if (index == 2) copy(r.url);
               else
@@ -2965,7 +3032,7 @@ public class MainActivity extends Activity {
   public void onNewIntent(Intent intent) {
     super.onNewIntent(intent);
     setIntent(intent);
-    if (WebResource.isHttp(intent.getDataString())) navigate(intent.getDataString());
+    if (WebResource.isHttp(intent.getDataString())) navigate(intent.getDataString(), false);
     if (intent.getBooleanExtra("show_downloads", false)) showDownloads();
   }
 
@@ -3031,6 +3098,9 @@ public class MainActivity extends Activity {
               ? t.url
               : "about:blank");
     state.putStringArrayList("tabs", urls);
+    boolean[] local = new boolean[urls.size()];
+    for (int i = 0; i < local.length; i++) local[i] = tabs.get(i).localDocument(urls.get(i));
+    state.putBooleanArray("localMediaTabs", local);
     state.putInt("active", Math.max(0, tabs.indexOf(current)));
     state.putInt("uploadRequestCode", uploadRequestCode);
   }

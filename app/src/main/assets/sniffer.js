@@ -15,6 +15,7 @@
   const quote = JSON.stringify.bind(JSON), parse = JSON.parse.bind(JSON);
   const keys = Object.keys, array = Array.isArray, assign = Object.assign;
   const seal = '__WEBSURF_DOCUMENT_START_SEAL__';
+  const packetPrefix = '{"seal":'+quote(seal)+',';
   // Only this document-start closure holds the seal. Never pass it through page callbacks,
   // mutable JSON.stringify/toJSON hooks or a parent window.
   let trustedEvent = null, nextInputTicket = 0;
@@ -30,7 +31,7 @@
     // mint a new authorization using a later physical tap or a later document's epoch.
     if(epoch===null || window.parent!==window)hello();
     const ticket=++nextInputTicket;
-    post('{"type":"input","documentId":'+quote(documentId)+',"epoch":'+epoch+',"seal":'+quote(seal)+
+    post(packetPrefix+'"type":"input","documentId":'+quote(documentId)+',"epoch":'+epoch+
       ',"inputTicket":'+ticket+',"mediaId":'+quote(state.id)+',"sourceVersion":'+state.version+',"url":'+quote(state.url)+',"action":'+quote(action)+'}');
     return ticket;
   }
@@ -53,7 +54,7 @@
     return '{'+fields+'}';
   }
   function direct(data) {
-    try { post('{"seal":'+quote(seal)+',"observation":'+encode(data)+'}'); } catch (_) {}
+    try { post(packetPrefix+'"observation":'+encode(data)+'}'); } catch (_) {}
   }
   function box(r) {return r && rect(r.left,r.top,r.width,r.height);}
   function projection(event) {
@@ -103,7 +104,7 @@
     for (let i = 0; i < ancestors.length; i++) if (ancestors[i] !== window.origin) return false;
     return true;
   })();
-  function hello() { if (!disposed && post) post('{"type":"hello","page":'+quote(location.href)+',"documentId":'+quote(documentId)+',"firstPartyTree":'+firstPartyTree+',"seal":'+quote(seal)+'}'); }
+  function hello() { if (!disposed && post) post(packetPrefix+'"type":"hello","page":'+quote(location.href)+',"documentId":'+quote(documentId)+',"firstPartyTree":'+firstPartyTree+'}'); }
   hello(); setTimeout(hello, 500);
 
   function claimPlayGesture(element) {

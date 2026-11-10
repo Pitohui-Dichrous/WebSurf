@@ -3,7 +3,6 @@ package io.websurf.app;
 import static org.junit.Assert.*;
 
 import android.content.Context;
-import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Rect;
 import android.net.Uri;
@@ -58,9 +57,7 @@ public final class BrowserNavigationSettingsTest {
     oldSearch = prefs.getString("search_engine", "");
     assertTrue(prefs.edit().putBoolean("auto_play", false).remove("search_engine").commit());
     previous = BASE + "/layout.html?previous=" + UUID.randomUUID();
-    scenario =
-        ActivityScenario.launch(
-            new Intent(context, MainActivity.class).setData(Uri.parse(previous)));
+    scenario = FixtureHttp.launchHomepage(context, previous);
     await(
         "Previous page did not load",
         10000,

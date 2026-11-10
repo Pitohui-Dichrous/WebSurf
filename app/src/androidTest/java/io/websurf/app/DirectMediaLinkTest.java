@@ -3,7 +3,6 @@ package io.websurf.app;
 import static org.junit.Assert.*;
 
 import android.content.Context;
-import android.content.Intent;
 import android.net.Uri;
 import android.os.SystemClock;
 import android.view.MotionEvent;
@@ -21,7 +20,7 @@ import java.util.concurrent.atomic.*;
 import java.util.function.Function;
 import org.junit.*;
 
-/** Synthetic export pages and cross-origin media only; no user URLs or credentials. */
+/** Synthetic export links, browser attachment handling and native playback. */
 @androidx.annotation.OptIn(markerClass = androidx.media3.common.util.UnstableApi.class)
 public final class DirectMediaLinkTest {
   private Context context;
@@ -38,9 +37,7 @@ public final class DirectMediaLinkTest {
     oldAuto = prefs.getBoolean("auto_play", true);
     prefs.edit().putBoolean("auto_play", false).commit();
     fixture = new Fixture();
-    scenario =
-        ActivityScenario.launch(
-            new Intent(context, MainActivity.class).setData(Uri.parse(fixture.page())));
+    scenario = FixtureHttp.launchHomepage(context, fixture.page());
     await(
         "Page and direct media link were not observed",
         () -> ui(a -> a.current.resources.containsKey(fixture.media() + "/export")));
@@ -94,6 +91,101 @@ public final class DirectMediaLinkTest {
     jobs.add(id);
     assertDownloaded(id);
     assertEquals(0, fixture.rejected.get());
+  }
+
+  @Test
+  public void unrequestedCrossOriginExportHasNoInferredReferrer() throws Exception {
+    String url = "https://cdn.example/export.mp4";
+    WebResource resource = observeLink(url);
+    ui(
+        a -> {
+          assertFalse(resource.requestHeadersCaptured);
+          assertFalse(a.headersFor(resource).containsKey("Referer"));
+          return null;
+        });
+  }
+
+  @Test
+  public void nativePlaybackBlocksRedirectAndHlsSegmentOnOtherLoopbackPort() throws Exception {
+    try (FixtureHttp.Canary privateService = new FixtureHttp.Canary()) {
+      fixture.privateTarget = privateService.base() + "/private.ts";
+      for (String path : List.of("/restricted.m3u8", "/restricted-redirect.mp4")) {
+        WebResource resource = observeLink(fixture.media() + path);
+        CompletableFuture<Throwable> failed = new CompletableFuture<>();
+        ui(
+            a -> {
+              assertEquals(
+                  fixture.media() + "/",
+                  a.mediaHeadersFor(resource).get(NativeMediaHttp.LOCAL_ORIGIN));
+              a.startPlayer(resource, 0, null, VideoChrome.Mode.FLOATING, true);
+              a.player.addListener(
+                  new androidx.media3.common.Player.Listener() {
+                    @Override
+                    public void onPlayerError(androidx.media3.common.PlaybackException error) {
+                      failed.complete(error);
+                    }
+                  });
+              return null;
+            });
+        Throwable failure = failed.get(20, TimeUnit.SECONDS);
+        Throwable cause = failure;
+        while (cause != null && !"拒绝跨来源请求局域网媒体".equals(cause.getMessage())) {
+          cause = cause.getCause();
+        }
+        assertNotNull(path + ": " + android.util.Log.getStackTraceString(failure), cause);
+        assertTrue(
+            fixture.hits.toString(),
+            fixture.hits.stream().anyMatch(h -> path.equals(h.path()) && !h.browser()));
+        assertEquals(path, 0, privateService.connections.get());
+      }
+    }
+  }
+
+  private WebResource observeLink(String url) throws Exception {
+    ui(
+        a -> {
+          a.current.web.evaluateJavascript(
+              "var link=document.createElement('a');link.href="
+                  + org.json.JSONObject.quote(url)
+                  + ";link.type='video/mp4';link.textContent='Export';document.body.append(link)",
+              null);
+          return null;
+        });
+    await("Export link was not discovered", () -> ui(a -> a.current.resources.containsKey(url)));
+    return ui(a -> a.current.resources.get(url));
+  }
+
+  @Test
+  public void typingExactLanAttachmentAuthorizesOnlyTheNativeAction() throws Exception {
+    String clip = fixture.media() + "/clip.mp4";
+    ui(
+        a -> {
+          a.newTab("about:blank", true);
+          return null;
+        });
+    await("Empty tab did not open", () -> ui(a -> "about:blank".equals(a.current.web.getUrl())));
+    ui(
+        a -> {
+          a.navigate(clip);
+          return null;
+        });
+    tapResourceAction("播放视频");
+    awaitPlaying();
+    String job =
+        ui(
+            a -> {
+              WebResource chosen = a.playing;
+              assertEquals(clip, chosen.url);
+              assertTrue(a.headersFor(chosen).containsKey(NativeMediaHttp.LOCAL_ORIGIN));
+              WebResource row = a.current.resources.get(clip);
+              assertNotSame(chosen, row);
+              if (row != null)
+                assertFalse(a.headersFor(row).containsKey(NativeMediaHttp.LOCAL_ORIGIN));
+              return DownloadService.enqueue(
+                  a, clip, "LAN attachment", a.mediaHeadersFor(chosen), chosen.mime);
+            });
+    jobs.add(job);
+    assertDownloaded(job);
   }
 
   @Test
@@ -300,10 +392,11 @@ public final class DirectMediaLinkTest {
 
   private final class Fixture implements AutoCloseable {
     final List<Hit> hits = new CopyOnWriteArrayList<>();
-    final ServerSocket pageSocket = FixtureHttp.listen(), mediaSocket = FixtureHttp.listen();
+    final ServerSocket socket = FixtureHttp.listen();
     final ExecutorService pool = Executors.newCachedThreadPool();
     final AtomicInteger rejected = new AtomicInteger();
     final byte[] video;
+    volatile String privateTarget;
     volatile boolean closed;
 
     Fixture() throws Exception {
@@ -314,32 +407,31 @@ public final class DirectMediaLinkTest {
               .open("fixtures/media/sample-360.mp4")) {
         video = input.readAllBytes();
       }
-      accept(pageSocket, false);
-      accept(mediaSocket, true);
+      accept();
     }
 
     String page() {
-      return "http://127.0.0.1:" + pageSocket.getLocalPort() + "/page";
+      return media() + "/page";
     }
 
     String media() {
-      return "http://127.0.0.1:" + mediaSocket.getLocalPort();
+      return "http://127.0.0.1:" + socket.getLocalPort();
     }
 
-    void accept(ServerSocket socket, boolean media) {
+    void accept() {
       pool.execute(
           () -> {
             while (!closed)
               try {
                 Socket client = socket.accept();
-                pool.execute(() -> serve(client, media));
+                pool.execute(() -> serve(client));
               } catch (IOException e) {
                 if (!closed) throw new RuntimeException(e);
               }
           });
     }
 
-    void serve(Socket client, boolean isMedia) {
+    void serve(Socket client) {
       try (Socket connection = client) {
         connection.setSoTimeout(5000);
         BufferedReader reader =
@@ -348,6 +440,8 @@ public final class DirectMediaLinkTest {
         String first = reader.readLine();
         if (first == null) return;
         String path = first.split(" ")[1];
+        boolean isMedia =
+            path.equals("/export") || path.equals("/clip.mp4") || path.startsWith("/restricted");
         Map<String, String> headers = new HashMap<>();
         for (String line; (line = reader.readLine()) != null && !line.isEmpty(); ) {
           int split = line.indexOf(':');
@@ -360,14 +454,25 @@ public final class DirectMediaLinkTest {
         String extra = "", status = "200 OK", mime = "video/mp4";
         if (!isMedia) {
           mime = "text/html; charset=utf-8";
-          extra = "Referrer-Policy: same-origin\r\n";
+          extra = "Referrer-Policy: no-referrer\r\n";
           body =
               ("<!doctype html><meta name='viewport'"
                    + " content='width=device-width,initial-scale=1'><title>Export fixture</title><a"
                    + " id='export' style='display:block;padding:30px' href='"
                       + media()
-                      + "/export' type='video/mp4' download>Export video</a>")
+                      + "/export' type='video/mp4' rel='noreferrer'>Export video</a>")
                   .getBytes(StandardCharsets.UTF_8);
+        } else if (path.equals("/restricted.m3u8")) {
+          mime = "application/vnd.apple.mpegurl";
+          body =
+              ("#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1,\n"
+                      + privateTarget
+                      + "\n#EXT-X-ENDLIST\n")
+                  .getBytes(StandardCharsets.UTF_8);
+        } else if (path.equals("/restricted-redirect.mp4")) {
+          status = "302 Found";
+          extra = "Location: " + privateTarget + "\r\n";
+          body = new byte[0];
         } else if (headers.containsKey("referer") && !headers.get("referer").isBlank()) {
           rejected.incrementAndGet();
           status = "403 Forbidden";
@@ -419,8 +524,7 @@ public final class DirectMediaLinkTest {
 
     public void close() throws IOException {
       closed = true;
-      pageSocket.close();
-      mediaSocket.close();
+      socket.close();
       pool.shutdownNow();
     }
   }

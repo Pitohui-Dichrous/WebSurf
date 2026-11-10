@@ -8,6 +8,8 @@ import androidx.media3.datasource.DataSpec;
 import java.io.*;
 import java.net.*;
 import java.util.*;
+import okhttp3.Call;
+import okhttp3.Response;
 
 /** Applies browser credentials to each media URI, including every redirect and HLS segment. */
 @androidx.annotation.OptIn(markerClass = androidx.media3.common.util.UnstableApi.class)
@@ -29,7 +31,7 @@ final class ScopedHttpDataSource extends BaseDataSource {
 
   private final String source;
   private final Map<String, String> headers;
-  private HttpURLConnection connection;
+  private Response connection;
   private InputStream input;
   private Uri uri;
   private long remaining = C.LENGTH_UNSET;
@@ -53,26 +55,32 @@ final class ScopedHttpDataSource extends BaseDataSource {
       MediaRequestPolicy.requireNetwork(source, url);
       Map<String, String> scopedHeaders = MediaRequestPolicy.headers(source, url, headers);
       for (int redirects = 0; redirects <= 8; redirects++) {
-        connection = (HttpURLConnection) new URL(url).openConnection();
-        connection.setInstanceFollowRedirects(false);
-        connection.setConnectTimeout(15000);
-        connection.setReadTimeout(20000);
-        connection.setRequestProperty("Accept-Encoding", "identity");
-        for (Map.Entry<String, String> e : scopedHeaders.entrySet())
-          connection.setRequestProperty(e.getKey(), e.getValue());
+        String range = null;
         if (spec.position > 0 || spec.length != C.LENGTH_UNSET)
-          connection.setRequestProperty(
-              "Range",
+          range =
               "bytes="
                   + spec.position
                   + "-"
-                  + (spec.length == C.LENGTH_UNSET ? "" : spec.position + spec.length - 1));
-        int code = connection.getResponseCode();
+                  + (spec.length == C.LENGTH_UNSET ? "" : spec.position + spec.length - 1);
+        Call call =
+            NativeMediaHttp.get(
+                source,
+                url,
+                headers.get(NativeMediaHttp.LOCAL_ORIGIN),
+                scopedHeaders,
+                range,
+                null,
+                15000,
+                20000);
+        if (spec.customData instanceof HlsManifestInput.Request request)
+          call.timeout().deadlineNanoTime(request.deadlineNs);
+        connection = call.execute();
+        int code = connection.code();
         if (code >= 300 && code <= 399) {
-          String location = connection.getHeaderField("Location");
+          String location = connection.header("Location");
           if (location == null) throw new IOException("媒体重定向缺少地址");
           String next = new URL(new URL(url), location).toString();
-          connection.disconnect();
+          connection.close();
           connection = null;
           MediaRequestPolicy.requireNetwork(url, next);
           scopedHeaders = MediaRequestPolicy.headers(url, next, scopedHeaders);
@@ -81,7 +89,7 @@ final class ScopedHttpDataSource extends BaseDataSource {
         }
         if (code < 200 || code >= 300) throw new IOException("媒体请求失败 HTTP " + code);
         uri = Uri.parse(url);
-        input = connection.getInputStream();
+        input = connection.body().byteStream();
         long skipped = code == 200 ? spec.position : 0;
         if (skipped > 0) {
           byte[] buffer = new byte[8192];
@@ -92,7 +100,7 @@ final class ScopedHttpDataSource extends BaseDataSource {
             todo -= n;
           }
         }
-        long length = connection.getContentLengthLong();
+        long length = connection.body().contentLength();
         remaining =
             spec.length != C.LENGTH_UNSET
                 ? spec.length
@@ -133,7 +141,7 @@ final class ScopedHttpDataSource extends BaseDataSource {
 
   @Override
   public Map<String, List<String>> getResponseHeaders() {
-    return connection == null ? Collections.emptyMap() : connection.getHeaderFields();
+    return connection == null ? Collections.emptyMap() : connection.headers().toMultimap();
   }
 
   @Override
@@ -142,7 +150,7 @@ final class ScopedHttpDataSource extends BaseDataSource {
       if (input != null) input.close();
     } finally {
       input = null;
-      if (connection != null) connection.disconnect();
+      if (connection != null) connection.close();
       connection = null;
       uri = null;
       if (opened) {

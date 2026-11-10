@@ -11,6 +11,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
 import io.websurf.app.FixtureHttp;
 import io.websurf.app.MainActivity;
+import io.websurf.app.NativeMediaHttp;
 import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
@@ -322,25 +323,60 @@ public class DownloadEngineInstrumentedTest {
     DownloadStore.Job job = job("/document");
     job.headers.put("aUtHoRiZaTiOn", "Bearer legacy");
     org.json.JSONObject legacy = job.json();
+    legacy.remove("localMediaOrigin");
+    legacy
+        .getJSONObject("headers")
+        .put(NativeMediaHttp.LOCAL_ORIGIN.toLowerCase(java.util.Locale.ROOT), server.base() + "/");
     legacy.remove("browserScopedHeaders");
     DownloadStore.Job migrated = DownloadStore.Job.from(legacy);
     assertEquals(job.id, migrated.id);
     assertEquals(job.url, migrated.url);
     assertEquals(job.state, migrated.state);
     assertEquals(Map.of("User-Agent", "WebSurf-test"), migrated.headers);
+    legacy.put("browserScopedHeaders", true);
+    assertFalse(
+        DownloadStore.Job.from(legacy).headers.keySet().stream()
+            .anyMatch(NativeMediaHttp.LOCAL_ORIGIN::equalsIgnoreCase));
     assertEquals(job.headers, DownloadStore.Job.from(job.json()).headers);
   }
 
   @Test
-  public void crossOriginRedirectDoesNotLeakCookieOrAuthorization() throws Exception {
-    DownloadStore.Job spec = job("/cross-redirect");
-    spec.headers.put("Authorization", "Bearer private-fixture-token");
-    new DownloadEngine(context, spec, current -> {}).run();
-    outputs.add(Uri.parse(spec.outputUri));
-    assertFalse(server.crossHeaders.containsKey("cookie"));
-    assertFalse(server.crossHeaders.containsKey("authorization"));
-    assertFalse(server.crossHeaders.containsKey("referer"));
-    assertEquals("WebSurf-test", server.crossHeaders.get("user-agent"));
+  public void redirectAndHlsChildrenCannotReachAnotherLoopbackService() throws Exception {
+    try (FixtureHttp.Canary privateService = new FixtureHttp.Canary()) {
+      String target = privateService.base() + "/target";
+      server.crossRedirect = target;
+      String segment = "#EXTINF:1,\nsegment00.ts\n#EXT-X-ENDLIST\n";
+      Map<String, String> playlists =
+          Map.of(
+              "/blocked-variant.m3u8", "#EXT-X-STREAM-INF:BANDWIDTH=1234\n" + target + "\n",
+              "/blocked-segment.m3u8",
+                  "#EXT-X-TARGETDURATION:1\n" + segment.replace("segment00.ts", target),
+              "/blocked-key.m3u8",
+                  "#EXT-X-TARGETDURATION:1\n#EXT-X-KEY:METHOD=AES-128,URI=\""
+                      + target
+                      + "\"\n"
+                      + segment,
+              "/blocked-init.m3u8",
+                  "#EXT-X-TARGETDURATION:1\n#EXT-X-MAP:URI=\"" + target + "\"\n" + segment);
+      playlists.forEach(
+          (path, body) ->
+              server.files.put(path, ("#EXTM3U\n" + body).getBytes(StandardCharsets.UTF_8)));
+      List<String> roots = new ArrayList<>(playlists.keySet());
+      roots.add("/cross-redirect");
+      for (String path : roots) {
+        DownloadStore.Job spec = job(path);
+        spec.headers.put("Authorization", "Bearer private-fixture-token");
+        java.io.IOException failure =
+            assertThrows(
+                path,
+                java.io.IOException.class,
+                () -> new DownloadEngine(context, spec, current -> {}).run());
+        assertEquals(path, "拒绝跨来源请求局域网媒体", failure.getMessage());
+        assertTrue(path, server.requests.contains(path));
+        assertEquals(path, "", spec.outputUri);
+        assertEquals(path, 0, privateService.connections.get());
+      }
+    }
   }
 
   @Test
@@ -547,6 +583,7 @@ public class DownloadEngineInstrumentedTest {
     j.id = UUID.randomUUID().toString();
     j.title = "WebSurf integration " + j.id;
     j.url = server.base() + path;
+    j.headers.put(NativeMediaHttp.LOCAL_ORIGIN, server.base() + "/");
     j.headers.put("Referer", "https://example.test/watch");
     j.headers.put("User-Agent", "WebSurf-test");
     j.headers.put("Cookie", "fixture=authorized");
@@ -635,7 +672,7 @@ public class DownloadEngineInstrumentedTest {
         new java.util.concurrent.CountDownLatch(8);
     final java.util.concurrent.CountDownLatch wideRange16 =
         new java.util.concurrent.CountDownLatch(16);
-    volatile Map<String, String> crossHeaders = new HashMap<>();
+    volatile String crossRedirect;
     final byte[] pdf =
         "%PDF-1.4\nWebSurf byte-preservation fixture\n%%EOF\n".getBytes(StandardCharsets.UTF_8);
     volatile boolean closed;
@@ -756,20 +793,8 @@ public class DownloadEngineInstrumentedTest {
         }
         if (path.equals("/cross-redirect")) {
           out.write(
-              ("HTTP/1.1 302 Found\r\nLocation: http://localhost:"
-                      + socket.getLocalPort()
-                      + "/cross-target\r\nContent-Length: 0\r\n\r\n")
+              ("HTTP/1.1 302 Found\r\nLocation: " + crossRedirect + "\r\nContent-Length: 0\r\n\r\n")
                   .getBytes(StandardCharsets.US_ASCII));
-          return;
-        }
-        if (path.equals("/cross-target")) {
-          crossHeaders = headers;
-          out.write(
-              ("HTTP/1.1 200 OK\r\nContent-Type: application/pdf\r\nContent-Length: "
-                      + pdf.length
-                      + "\r\n\r\n")
-                  .getBytes(StandardCharsets.US_ASCII));
-          out.write(pdf);
           return;
         }
         if (!"fixture=authorized".equals(headers.get("cookie"))

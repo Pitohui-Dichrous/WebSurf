@@ -111,7 +111,9 @@ function harness({media=[],width=400,height=700,childFrame=false,dark=false,ance
   window.HTMLMediaElement=PageMedia;
   media.forEach(v=>Object.setPrototypeOf(v,PageMedia.prototype));
   window.parent=childFrame?{postMessage(data){parentPosts.push(data);}}:window;
-  const bridge={onmessage:null,postMessage(value){const packet=JSON.parse(value);
+  const bridge={onmessage:null,postMessage(value){
+    assert.ok(value.startsWith('{"seal":'+JSON.stringify(documentStart?'__WEBSURF_DOCUMENT_START_SEAL__':'')+','));
+    const packet=JSON.parse(value);
     if(packet.observation)assert.equal(packet.seal,documentStart?'__WEBSURF_DOCUMENT_START_SEAL__':'');
     messages.push(packet.observation||packet);}};window.WebSurfObserver=bridge;
   class Xhr extends Events{open(){}}

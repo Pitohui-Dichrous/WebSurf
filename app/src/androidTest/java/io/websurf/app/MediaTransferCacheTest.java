@@ -85,6 +85,43 @@ public final class MediaTransferCacheTest {
   }
 
   @Test
+  public void publicRedirectRequestsStripCredentialsAndHonorBothReferrerPolicies()
+      throws Exception {
+    String root = "http://media.example/export";
+    String destination = "http://cdn.example/file.mp4";
+    for (String page : List.of("http://media.example/private/page", "https://page.example/watch")) {
+      Map<String, String> observed =
+          Map.of(
+              "Cookie",
+              "private=1",
+              "Authorization",
+              "Bearer private",
+              "User-Agent",
+              "Fixture",
+              "Referer",
+              page,
+              NativeMediaHttp.LOCAL_ORIGIN,
+              "http://127.0.0.1/");
+      Map<String, String> scoped =
+          MediaRequestPolicy.headers(
+              root,
+              destination,
+              observed,
+              ignored -> {
+                throw new AssertionError("Redirect must not consult destination cookies");
+              });
+      okhttp3.Request outgoing =
+          NativeMediaHttp.get(root, destination, "", scoped, null, null, 1000, 1000).request();
+      assertNull(outgoing.header("Cookie"));
+      assertNull(outgoing.header("Authorization"));
+      assertNull(outgoing.header(NativeMediaHttp.LOCAL_ORIGIN));
+      assertEquals("Fixture", outgoing.header("User-Agent"));
+      assertEquals(
+          page.startsWith("https:") ? null : "http://media.example/", outgoing.header("Referer"));
+    }
+  }
+
+  @Test
   public void playbackTransportRefusesPrivateFileContentAndInlineDataForRemoteStreams()
       throws Exception {
     java.io.File file = java.io.File.createTempFile("remote-hls", ".mp4", context.getCacheDir());

@@ -12,7 +12,7 @@
             <data android:mimeType="*/*" />
         </intent>
     </queries>
-    <application android:label="WebSurf" android:icon="@drawable/ws_logo" android:roundIcon="@drawable/ws_logo"
+    <application android:name=".WebSurfApplication" android:label="WebSurf" android:icon="@drawable/ws_logo" android:roundIcon="@drawable/ws_logo"
         android:theme="@style/AppTheme" android:allowBackup="false" android:dataExtractionRules="@xml/data_extraction_rules"
         android:usesCleartextTraffic="true" android:supportsRtl="true">
         <activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTop"

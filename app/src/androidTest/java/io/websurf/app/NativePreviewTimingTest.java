@@ -3,11 +3,9 @@ package io.websurf.app;
 import static org.junit.Assert.*;
 
 import android.content.Context;
-import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.Color;
-import android.net.Uri;
 import android.os.SystemClock;
 import android.view.TextureView;
 import androidx.media3.common.Player;
@@ -40,9 +38,7 @@ public final class NativePreviewTimingTest {
     assertTrue(prefs.edit().putBoolean("auto_play", false).commit());
     try {
       scenario =
-          ActivityScenario.launch(
-              new Intent(context, MainActivity.class)
-                  .setData(Uri.parse("http://127.0.0.1:8765/layout.html?preview-timing")));
+          FixtureHttp.launchHomepage(context, "http://127.0.0.1:8765/layout.html?preview-timing");
       await(
           "Fixture page did not finish loading",
           10000,
@@ -52,6 +48,8 @@ public final class NativePreviewTimingTest {
               "http://127.0.0.1:8765/public/preview-black-intro.mp4?native-preview-timing="
                   + System.nanoTime());
       resource.title = "三秒预览测试";
+      resource.frozenDownloadHeaders = true;
+      resource.headers.put(NativeMediaHttp.LOCAL_ORIGIN, "http://127.0.0.1:8765/");
       ExoPlayer original =
           ui(
               a -> {

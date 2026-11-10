@@ -88,9 +88,7 @@ public final class DownloadSettingsProgressTest {
         new IntentFilter(DownloadService.ACTION_CHANGED),
         ContextCompat.RECEIVER_NOT_EXPORTED);
     server = new Fixture();
-    scenario =
-        ActivityScenario.launch(
-            new Intent(context, MainActivity.class).setData(Uri.parse(server.base() + "/page")));
+    scenario = FixtureHttp.launchHomepage(context, server.base() + "/page");
     await(
         "Browser did not become visible",
         10000,
@@ -239,7 +237,13 @@ public final class DownloadSettingsProgressTest {
   }
 
   private String enqueue(String url, String title) {
-    String id = DownloadService.enqueue(context, url, title, Map.of(), "application/octet-stream");
+    String id =
+        DownloadService.enqueue(
+            context,
+            url,
+            title,
+            Map.of(NativeMediaHttp.LOCAL_ORIGIN, server.base() + "/"),
+            "application/octet-stream");
     owned.add(id);
     return id;
   }

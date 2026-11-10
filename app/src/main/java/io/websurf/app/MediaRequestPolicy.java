@@ -19,9 +19,11 @@ public final class MediaRequestPolicy {
     if (parent.regionMatches(true, 0, "https:", 0, 6)
         && destination.regionMatches(true, 0, "http:", 0, 5))
       throw new IOException("拒绝从 HTTPS 降级到 HTTP");
+    if (NativeMediaHttp.isLocalOriginCandidate(destination) && !sameOrigin(parent, destination))
+      throw new IOException("拒绝跨来源请求局域网媒体");
   }
 
-  static boolean sameOrigin(String a, String b) {
+  public static boolean sameOrigin(String a, String b) {
     if (!WebResource.isHttp(a) || !WebResource.isHttp(b)) return false;
     URI x = URI.create(a), y = URI.create(b);
     return x.getScheme().equalsIgnoreCase(y.getScheme())

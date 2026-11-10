@@ -2,6 +2,8 @@ package io.websurf.app.download;
 
 import android.content.Context;
 import android.util.AtomicFile;
+import io.websurf.app.MediaRequestPolicy;
+import io.websurf.app.NativeMediaHttp;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -49,6 +51,14 @@ public final class DownloadStore {
     JSONObject json() {
       JSONObject o = new JSONObject();
       try {
+        JSONObject requestHeaders = new JSONObject();
+        for (var entry : headers.entrySet()) {
+          if (NativeMediaHttp.LOCAL_ORIGIN.equalsIgnoreCase(entry.getKey())) {
+            if (NativeMediaHttp.isLocalOriginCandidate(url)
+                && MediaRequestPolicy.sameOrigin(url, entry.getValue()))
+              o.put("localMediaOrigin", entry.getValue());
+          } else requestHeaders.put(entry.getKey(), entry.getValue());
+        }
         o.put("id", id)
             .put("title", title)
             .put("url", url)
@@ -67,7 +77,7 @@ public final class DownloadStore {
             .put("completedParts", completedParts)
             .put("totalParts", totalParts)
             .put("browserScopedHeaders", true)
-            .put("headers", new JSONObject(headers));
+            .put("headers", requestHeaders);
       } catch (org.json.JSONException e) {
         throw new IllegalStateException(e);
       }
@@ -98,6 +108,7 @@ public final class DownloadStore {
         java.util.Iterator<String> keys = h.keys();
         while (keys.hasNext()) {
           String k = keys.next();
+          if (NativeMediaHttp.LOCAL_ORIGIN.equalsIgnoreCase(k)) continue;
           if (!o.optBoolean("browserScopedHeaders")
               && (k.equalsIgnoreCase("Cookie")
                   || k.equalsIgnoreCase("Authorization")
@@ -105,6 +116,11 @@ public final class DownloadStore {
           j.headers.put(k, h.optString(k));
         }
       }
+      String localOrigin = o.optString("localMediaOrigin");
+      if (!localOrigin.isEmpty()
+          && NativeMediaHttp.isLocalOriginCandidate(j.url)
+          && MediaRequestPolicy.sameOrigin(localOrigin, j.url))
+        j.headers.put(NativeMediaHttp.LOCAL_ORIGIN, localOrigin);
       return j;
     }
   }

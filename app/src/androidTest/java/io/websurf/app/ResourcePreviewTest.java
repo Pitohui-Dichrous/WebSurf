@@ -29,6 +29,7 @@ public final class ResourcePreviewTest {
   @Before
   public void setup() throws Exception {
     server = new Fixture();
+    headers.put(NativeMediaHttp.LOCAL_ORIGIN, server.base() + "/");
     headers.put("User-Agent", "WebSurf-preview-test");
     headers.put("Referer", server.base() + "/page");
     headers.put("Cookie", "preview_private=1");
@@ -126,21 +127,44 @@ public final class ResourcePreviewTest {
   }
 
   @Test
-  public void posterRedirectDoesNotForwardAnotherOriginCredentials() throws Exception {
-    WebResource resource = new WebResource(server.base() + "/master.m3u8");
-    resource.posterUrl = server.base() + "/poster-redirect";
-    String cross = server.base().replace("127.0.0.1", "localhost");
-    CookieManager.getInstance().setCookie(cross, "preview_foreign=strict; SameSite=Strict; Path=/");
-    ResourcePreviewLoader.Result result;
-    try {
-      result = load(resource);
-    } finally {
-      CookieManager.getInstance().setCookie(cross, "preview_foreign=; Max-Age=0; Path=/");
-    }
+  public void secureDocumentCannotPreviewCleartextEvenOnAnAuthorizedOrigin() throws Exception {
+    WebResource clear = new WebResource(server.base() + "/poster.png");
+    assertNotNull(load(clear).bitmap);
+    int requestsBefore = server.requests.get();
+    clear.notePreviewContext("https://secure.example/page");
+    clear.notePreviewContext(server.base());
+    assertNull(load(clear).bitmap);
+    assertEquals(requestsBefore, server.requests.get());
+  }
 
-    assertNotNull(result.bitmap);
-    assertEquals(1, server.crossRequests.get());
-    assertEquals(0, server.credentialLeaks.get());
+  @Test
+  public void posterAndPosterRedirectCannotContactAnotherLoopbackPort() throws Exception {
+    try (FixtureHttp.Canary privateService = new FixtureHttp.Canary()) {
+      server.posterRedirect = privateService.base() + "/redirect-target.png";
+      for (String poster :
+          List.of(privateService.base() + "/poster.png", server.base() + "/poster-redirect")) {
+        WebResource resource = new WebResource(server.base() + "/master.m3u8");
+        resource.posterUrl = poster;
+        ResourcePreviewLoader.Result result = load(resource);
+        assertNull(result.bitmap);
+        assertEquals("360p / 720p", resource.availableQualities);
+        assertEquals(0, privateService.connections.get());
+      }
+      assertEquals("Two approved manifests and the redirect entry", 3, server.requests.get());
+    }
+  }
+
+  @Test
+  public void initialImageFrameAndPlaylistInspectionCannotContactUngrantedLoopback()
+      throws Exception {
+    headers.remove(NativeMediaHttp.LOCAL_ORIGIN);
+    try (FixtureHttp.Canary privateService = new FixtureHttp.Canary()) {
+      for (String file : List.of("/image.png", "/clip.mp4", "/master.m3u8")) {
+        WebResource resource = new WebResource(privateService.base() + file);
+        assertNull(load(resource).bitmap);
+        assertEquals(file, 0, privateService.connections.get());
+      }
+    }
   }
 
   @Test
@@ -263,9 +287,8 @@ public final class ResourcePreviewTest {
     final AtomicInteger requests = new AtomicInteger(),
         transferred = new AtomicInteger(),
         segmentRequests = new AtomicInteger(),
-        crossRequests = new AtomicInteger(),
-        credentialLeaks = new AtomicInteger(),
         authenticationFailures = new AtomicInteger();
+    volatile String posterRedirect;
     final byte[] video, blackIntro, shortVideo, poster, master;
     final CountDownLatch delayedPosterRequested = new CountDownLatch(1),
         delayedPosterRelease = new CountDownLatch(1);
@@ -336,17 +359,11 @@ public final class ResourcePreviewTest {
         }
         if (path.equals("/poster-redirect")) {
           output.write(
-              ("HTTP/1.1 302 Found\r\nLocation: http://localhost:"
-                      + socket.getLocalPort()
-                      + "/cross-poster\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+              ("HTTP/1.1 302 Found\r\nLocation: "
+                      + posterRedirect
+                      + "\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
                   .getBytes(StandardCharsets.US_ASCII));
           return;
-        }
-        if (path.equals("/cross-poster")) {
-          crossRequests.incrementAndGet();
-          if (headers.containsKey("cookie")
-              || headers.containsKey("authorization")
-              || !(base() + "/").equals(headers.get("referer"))) credentialLeaks.incrementAndGet();
         }
         if (path.equals("/video.mp4")
             && (!headers.getOrDefault("cookie", "").contains("preview_private=1")

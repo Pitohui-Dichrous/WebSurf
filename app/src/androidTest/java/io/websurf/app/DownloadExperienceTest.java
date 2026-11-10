@@ -120,10 +120,7 @@ public final class DownloadExperienceTest {
         receiver,
         new IntentFilter(DownloadService.ACTION_CHANGED),
         ContextCompat.RECEIVER_NOT_EXPORTED);
-    scenario =
-        ActivityScenario.launch(
-            new Intent(context, MainActivity.class)
-                .setData(Uri.parse(BASE + "/?experience=" + System.nanoTime())));
+    scenario = FixtureHttp.launchHomepage(context, BASE + "/?experience=" + System.nanoTime());
     await(
         "Browser window did not become visible",
         10000,
@@ -569,6 +566,8 @@ public final class DownloadExperienceTest {
 
   private static WebResource video(String url, String title, String mime) {
     WebResource r = new WebResource(url);
+    r.frozenDownloadHeaders = true;
+    r.headers.put(NativeMediaHttp.LOCAL_ORIGIN, java.net.URI.create(url).resolve("/").toString());
     r.title = title;
     r.mime = mime;
     r.classify();

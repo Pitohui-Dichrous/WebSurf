@@ -10,6 +10,15 @@ public final class WebResource {
   public final String url;
   public boolean frozenDownloadHeaders;
   public boolean requestHeadersCaptured;
+  boolean fromLocalDocument;
+  boolean httpsPreviewContext;
+
+  void notePreviewContext(String documentUrl) {
+    // Different frames can report the same resource. Later hints must not relax its policy.
+    if (documentUrl != null && documentUrl.regionMatches(true, 0, "https:", 0, 6))
+      httpsPreviewContext = true;
+  }
+
   String requestDestination = "";
   Runnable onRequestCaptured;
   public String referrerPolicy = "";

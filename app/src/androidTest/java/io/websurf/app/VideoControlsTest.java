@@ -5,10 +5,8 @@ import static org.junit.Assert.*;
 import android.accessibilityservice.AccessibilityServiceInfo;
 import android.app.UiAutomation;
 import android.content.Context;
-import android.content.Intent;
 import android.content.res.Configuration;
 import android.graphics.Rect;
-import android.net.Uri;
 import android.os.Bundle;
 import android.os.SystemClock;
 import android.view.MotionEvent;
@@ -43,9 +41,8 @@ public final class VideoControlsTest {
   public void nativeControlsRespectPauseLockTemporarySpeedAndSeek() throws Exception {
     Context context = ApplicationProvider.getApplicationContext();
     scenario =
-        ActivityScenario.launch(
-            new Intent(context, MainActivity.class)
-                .setData(Uri.parse("http://127.0.0.1:8765/?native-controls=" + System.nanoTime())));
+        FixtureHttp.launchHomepage(
+            context, "http://127.0.0.1:8765/?native-controls=" + System.nanoTime());
     try {
       await(
           "Fixture media target missing",

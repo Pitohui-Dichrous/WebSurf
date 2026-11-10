@@ -6,7 +6,6 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Rect;
-import android.net.Uri;
 import android.os.SystemClock;
 import android.view.MotionEvent;
 import android.view.View;
@@ -72,10 +71,7 @@ public final class BrowserFlowTest {
     } finally {
       health.disconnect();
     }
-    scenario =
-        ActivityScenario.launch(
-            new Intent(context, MainActivity.class)
-                .setData(Uri.parse(BASE + "/?browser-flow=" + System.nanoTime())));
+    scenario = FixtureHttp.launchHomepage(context, BASE + "/?browser-flow=" + System.nanoTime());
     waitForPage();
   }
 
@@ -247,6 +243,23 @@ public final class BrowserFlowTest {
     assertSame(originalWeb, ui(activity -> activity.current.web));
     assertEquals(instance, stringJs("window.__fixture.instance"));
     assertEquals(marker, stringJs("document.getElementById('note').value"));
+  }
+
+  @Test
+  public void deeplyNestedAndBinaryBridgeMessagesLeaveTheObserverUsable() throws Exception {
+    js(
+        "window.WebSurfObserver.postMessage('{\"x\":'+'['.repeat(8000)+'0'+']'.repeat(8000)+'}');"
+            + "try{window.WebSurfObserver.postMessage(new ArrayBuffer(4))}catch(e){};"
+            + "const v=document.createElement('video');v.preload='none';"
+            + "v.src='/bridge-after-invalid.mp4';document.body.appendChild(v);true");
+    await(
+        "Observer did not report real media after the malformed messages",
+        6000,
+        () ->
+            ui(
+                a ->
+                    a.current.videos.values().stream()
+                        .anyMatch(video -> video.url.endsWith("/bridge-after-invalid.mp4"))));
   }
 
   @Test
