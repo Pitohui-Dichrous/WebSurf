@@ -13,9 +13,25 @@
   const elementBounds = Function.prototype.call.bind(Element.prototype.getBoundingClientRect);
   const bridge = window.WebSurfObserver;
   const post = bridge && bridge.postMessage.bind(bridge);
+  const seal = '__WEBSURF_DOCUMENT_START_SEAL__';
+  const probeFetch = window.fetch && window.fetch.bind(window);
+  const mediaPrototype = window.HTMLMediaElement && window.HTMLMediaElement.prototype;
+  const currentSource = mediaPrototype && Object.getOwnPropertyDescriptor(mediaPrototype,'currentSrc');
+  const readyState = mediaPrototype && Object.getOwnPropertyDescriptor(mediaPrototype,'readyState');
+  const readSource = currentSource && Function.prototype.call.bind(currentSource.get);
+  const readReady = readyState && Function.prototype.call.bind(readyState.get);
+  // The page can observe native replies. Keep the other half of the local probe marker
+  // inside this document-start closure and send it only over the captured native bridge.
+  const referrerKey = (() => {
+    if(!seal||!probeFetch||!window.crypto)return '';
+    const random = new Uint32Array(4);window.crypto.getRandomValues(random);return random.join('-');
+  })();
+  const workers = (() => {try{return window.navigator && window.navigator.serviceWorker;}catch(_){return null;}})();
+  const controller = workers && window.ServiceWorkerContainer &&
+    Object.getOwnPropertyDescriptor(window.ServiceWorkerContainer.prototype,'controller');
+  const readController = controller && Function.prototype.call.bind(controller.get);
   const quote = JSON.stringify.bind(JSON), parse = JSON.parse.bind(JSON);
   const keys = Object.keys, array = Array.isArray, assign = Object.assign;
-  const seal = '__WEBSURF_DOCUMENT_START_SEAL__';
   const packetPrefix = '{"seal":'+quote(seal)+',';
   // Only this document-start closure holds the seal. Never pass it through page callbacks,
   // mutable JSON.stringify/toJSON hooks or a parent window.
@@ -88,7 +104,7 @@
   try { window.WebSurfObserver.onmessage = event => {
     let ack; try { ack = parse(event.data); } catch (_) { return; }
     if (ack.documentId !== documentId || !Number.isSafeInteger(ack.epoch)) return;
-    if (ack.command) {if (ack.epoch===epoch&&ack.command.documentId===documentId) command(ack.command);return;}
+    if (ack.command) {if (ack.epoch===epoch&&ack.command.documentId===documentId) command(ack.command,true);return;}
     const changed=epoch!==null&&epoch!==ack.epoch;
     epoch = ack.epoch; if(typeof ack.dark==='boolean')setTheme(ack.dark); queued.splice(0).forEach(emit);
     // A same-URL navigation can advance native's epoch after document-start injection already
@@ -105,7 +121,7 @@
     for (let i = 0; i < ancestors.length; i++) if (ancestors[i] !== window.origin) return false;
     return true;
   })();
-  function hello() { if (!disposed && post) post(packetPrefix+'"type":"hello","page":'+quote(location.href)+',"documentId":'+quote(documentId)+',"firstPartyTree":'+firstPartyTree+'}'); }
+  function hello() { if (!disposed && post) post(packetPrefix+'"type":"hello","page":'+quote(location.href)+',"documentId":'+quote(documentId)+',"firstPartyTree":'+firstPartyTree+',"referrerKey":'+quote(referrerKey)+'}'); }
   hello(); setTimeout(hello, 500);
 
   function claimPlayGesture(element) {
@@ -560,7 +576,7 @@
     media.forEach(state=>{if(state.attached||state.button||!state.element.paused){report(state,'layout');updateButton(state);}});
     setTimeout(motionTick,200);
   }
-  function command(value){
+  function command(value,fromNative){
     if(!value||typeof value!=='object')return false;
     if(value.action==='theme'&&typeof value.dark==='boolean'){setTheme(value.dark);return true;}
     if(value.action==='probe'&&!value.documentId){media.forEach(state=>report(state,'media'));layouts();postChildren({__websurfCommand:true,command:value});return true;}
@@ -569,6 +585,16 @@
     if(!state||!state.element.isConnected)return false;
     inspect(state.element);
     if(value.sourceVersion!=null&&value.sourceVersion!==state.version)return false;
+    if(value.action==='referrer'){
+      // The interceptor answers this cache-only HEAD locally. Chromium applies the effective
+      // document policy, including HTTP headers, to the exact selected media URL.
+      if(!fromNative||!referrerKey||!firstPartyTree||!readSource||!readReady||state.attached||
+        (workers&&(!readController||readController(workers)))||
+        value.url!==state.url||readSource(state.element)!==value.url||readReady(state.element)<1)return false;
+      probeFetch(value.url,{__proto__:null,method:'HEAD',mode:'same-origin',cache:'only-if-cached',
+        credentials:'omit',redirect:'error',headers:{__proto__:null,'X-WebSurf-Referrer-Probe':value.token+'.'+referrerKey}}).catch(()=>{});
+      return true;
+    }
     if(value.action==='attach')return attach(state,value);
     if(value.action==='detach'){
       const failed=value.failed===true||value.reason==='native-failure';
@@ -583,7 +609,7 @@
       try{const result=(value.action==='play'?state.originalPlay:state.originalPause).call(state.element);if(result&&result.catch)result.catch(()=>{});}catch(_){}return true;
     }return false;
   }
-  window.__websurf={scan,command,documentId};
+  window.__websurf={scan,command:value=>command(value,false),documentId};
   window.addEventListener('message',e=>{
     const data=e.data;if(!data||typeof data!=='object')return;
     if(e.source===window.parent&&window.parent!==window){if(data.__websurfCommand===true&&data.command&&data.command.action==='theme')setTheme(!!data.command.dark);if(data.__websurfLayout===true)scheduleLayout();if(data.__websurfHandshake===true)hello();return;}

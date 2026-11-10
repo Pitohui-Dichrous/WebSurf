@@ -56,6 +56,8 @@ public class MainActivity extends Activity {
   float inlineExpansion;
   final ResourcePreviewLoader previewLoader = new ResourcePreviewLoader();
   VideoTarget activeTarget;
+  private String activeReferrer = "";
+  private long activeReferrerGeneration;
   VideoChrome.Mode playerMode = VideoChrome.Mode.INLINE;
   float floatX = Float.NaN, floatY = Float.NaN;
   float logicalVolume = 1, appliedGain = 1;
@@ -595,6 +597,10 @@ public class MainActivity extends Activity {
                 } else if (frame.reply != reply
                     || frame.main != isMain
                     || !frame.origin.equals(origin.toString())) return;
+                frame = tab.documents.get(document);
+                String key = event.optString("referrerKey");
+                if (frame.firstPartyTree && frame.referrerKey.isEmpty()
+                    && key.matches("[0-9]{1,10}(-[0-9]{1,10}){3}")) frame.referrerKey = key;
                 reply.postMessage(
                     new JSONObject()
                         .put("documentId", document)
@@ -761,6 +767,21 @@ public class MainActivity extends Activity {
           @Override
           public WebResourceResponse shouldInterceptRequest(
               WebView view, WebResourceRequest request) {
+            if ("HEAD".equals(request.getMethod())) {
+              String token = null, referer = "";
+              for (var header : request.getRequestHeaders().entrySet()) {
+                if (header.getKey().equalsIgnoreCase(BrowserTab.ReferrerProbe.HEADER)) token = header.getValue();
+                if (header.getKey().equalsIgnoreCase("Referer")) referer = header.getValue();
+              }
+              if (token != null) {
+                var probe = tab.referrerProbe;
+                if (probe != null && !request.isForMainFrame())
+                  probe.capture(token, tab.epoch, request.getUrl().toString(), referer);
+                // Also absorb expired probes. These requests never enter the resource list.
+                return new WebResourceResponse("text/plain", "UTF-8", 204, "No Content",
+                    Map.of("Cache-Control", "no-store"), null);
+              }
+            }
             if ("GET".equals(request.getMethod())) {
               String url = request.getUrl().toString();
               Map<String, String> headers = new LinkedHashMap<>(request.getRequestHeaders());
@@ -1372,9 +1393,18 @@ public class MainActivity extends Activity {
     // The selected HTML source is a separate operation from previewing a sniffed request.
     // A live document, element and source generation must all match the original grant.
     headers.keySet().removeIf("Cookie"::equalsIgnoreCase);
-    if (firstPartySource(current, live) && !live.sourceCookies.isEmpty()) {
-      String cookie = live.remainingSourceCookies(CookieManager.getInstance().getCookie(r.url));
-      if (!cookie.isEmpty()) headers.put("Cookie", cookie);
+    if (firstPartySource(current, live)) {
+      if (!live.sourceCookies.isEmpty()) {
+        String cookie = live.remainingSourceCookies(CookieManager.getInstance().getCookie(r.url));
+        if (!cookie.isEmpty()) headers.put("Cookie", cookie);
+      }
+      // The active player's download uses the same transfer context as its decoder.
+      if (!r.requestHeadersCaptured && !activeReferrer.isEmpty() && playing == r
+          && playerTab == current && target == activeTarget
+          && activeReferrerGeneration == current.playGeneration && live.documentReferrer != null
+          && live.documentReferrer.sameDocument(target.documentReferrer)
+          && live.documentReferrer.matchesHeader("Referer", activeReferrer))
+        headers.put("Referer", activeReferrer);
     }
     return headers;
   }
@@ -1453,11 +1483,11 @@ public class MainActivity extends Activity {
   }
 
   void openTarget(BrowserTab tab, VideoTarget target, boolean explicit) {
-    openTarget(tab, target, explicit, true);
+    openTarget(tab, target, explicit, true, "");
   }
 
   private void openTarget(
-      BrowserTab tab, VideoTarget target, boolean explicit, boolean awaitRequest) {
+      BrowserTab tab, VideoTarget target, boolean explicit, boolean awaitRequest, String referer) {
     if (tab != current || !WebResource.isHttp(target.url)) {
       if (explicit) toast("此视频使用网页专用媒体源，请继续在网页播放");
       return;
@@ -1501,19 +1531,36 @@ public class MainActivity extends Activity {
       // A site's src mutation can reach us before WebView dispatches the matching GET. Retain
       // the browser's decoder briefly so source swaps can capture their own request context.
       if (resource.onRequestCaptured != null) handler.removeCallbacks(resource.onRequestCaptured);
+      BrowserTab.Frame frame = tab.documents.get(target.documentId);
+      BrowserTab.ReferrerProbe probe = firstPartySource(tab, target) && !frame.referrerKey.isEmpty()
+          ? new BrowserTab.ReferrerProbe(resource.url, tab.epoch, frame.referrerKey) : null;
+      tab.referrerProbe = probe;
       resource.onRequestCaptured =
           () -> {
             resource.onRequestCaptured = null;
+            if (tab.referrerProbe == probe) tab.referrerProbe = null;
             VideoTarget latest = tab.videos.get(target.key());
             if (tab != current
                 || tab.playGeneration != generation
                 || !resumed
                 || latest == null
-                || latest.sourceVersion != target.sourceVersion
-                || !resource.url.equals(latest.url)) return;
-            openTarget(tab, latest, explicit, false);
+                || !latest.sameSourceAs(target)) return;
+            String observed = probe == null ? null : probe.referer.get();
+            boolean usable = observed != null && !resource.requestHeadersCaptured
+                && probe.epoch == tab.epoch && firstPartySource(tab, latest)
+                && latest.documentReferrer != null && target.documentReferrer != null
+                && latest.documentReferrer.sameDocument(target.documentReferrer)
+                && latest.documentReferrer.matchesHeader("Referer", observed);
+            openTarget(tab, latest, explicit, false, usable ? observed : "");
           };
       handler.postDelayed(resource.onRequestCaptured, 750);
+      if (probe != null) {
+        JSONObject data = new JSONObject();
+        try {
+          data.put("url", resource.url).put("token", probe.challenge);
+          command(tab, target, "referrer", data);
+        } catch (JSONException ignored) {}
+      }
       return;
     }
     target.suppressed = false;
@@ -1527,7 +1574,7 @@ public class MainActivity extends Activity {
         activeTarget != null && activeTarget.key().equals(target.key()) && player != null
             ? player.getPlayWhenReady()
             : explicit || !target.paused;
-    startPlayer(resource, Math.max(0, (long) (target.time * 1000)), target, next, intent);
+    startPlayer(resource, Math.max(0, (long) (target.time * 1000)), target, next, intent, false, referer);
   }
 
   void startPlayer(
@@ -1536,7 +1583,7 @@ public class MainActivity extends Activity {
       VideoTarget target,
       VideoChrome.Mode mode,
       boolean playIntent) {
-    startPlayer(resource, position, target, mode, playIntent, false);
+    startPlayer(resource, position, target, mode, playIntent, false, "");
   }
 
   private void startPlayer(
@@ -1545,7 +1592,8 @@ public class MainActivity extends Activity {
       VideoTarget target,
       VideoChrome.Mode mode,
       boolean playIntent,
-      boolean downloadedFile) {
+      boolean downloadedFile,
+      String observedReferrer) {
     closePlayer(false, false);
     playerStartPosition = position;
     playerRenderedFrame = false;
@@ -1555,6 +1603,8 @@ public class MainActivity extends Activity {
     playing = resource;
     playerTab = current;
     activeTarget = target;
+    activeReferrer = observedReferrer;
+    activeReferrerGeneration = current == null ? 0 : current.playGeneration;
     if (target != null && playerTab != null) playerTab.selectedVideo = target.key();
     logicalVolume = target == null ? 1 : (float) Math.max(0, Math.min(1, target.volume));
     logicalMuted = target != null && target.muted;
@@ -2009,6 +2059,7 @@ public class MainActivity extends Activity {
     playing = null;
     playerTab = null;
     activeTarget = null;
+    activeReferrer = "";
     inlinePinned = false;
     inlineExpansion = 0;
     root.setKeepScreenOn(false);
@@ -2608,7 +2659,7 @@ public class MainActivity extends Activity {
       resource.title = job.title;
       resource.classify();
       if (activeSheet != null) activeSheet.dismiss();
-      startPlayer(resource, 0, null, VideoChrome.Mode.FLOATING, true, true);
+      startPlayer(resource, 0, null, VideoChrome.Mode.FLOATING, true, true, "");
       return;
     }
     try {

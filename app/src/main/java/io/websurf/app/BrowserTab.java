@@ -12,6 +12,27 @@ final class BrowserTab {
 
   record NavigationRequest(long epoch, String url, java.util.Map<String, String> headers) {}
 
+  static final class ReferrerProbe {
+    static final String HEADER = "X-WebSurf-Referrer-Probe";
+    final String challenge = java.util.UUID.randomUUID().toString(), marker, url;
+    final long epoch;
+    final java.util.concurrent.atomic.AtomicReference<String> referer =
+        new java.util.concurrent.atomic.AtomicReference<>();
+
+    ReferrerProbe(String url, long epoch, String frameKey) {
+      this.url = url;
+      this.epoch = epoch;
+      marker = challenge + "." + frameKey;
+    }
+
+    void capture(String token, long currentEpoch, String requestedUrl, String observedReferer) {
+      if (epoch == currentEpoch && marker.equals(token) && url.equals(requestedUrl))
+        referer.compareAndSet(null, observedReferer);
+    }
+  }
+
+  volatile ReferrerProbe referrerProbe;
+
   final java.util.concurrent.atomic.AtomicReference<NavigationRequest> navigationRequest =
       new java.util.concurrent.atomic.AtomicReference<>();
   final String startSeal = java.util.UUID.randomUUID().toString();
@@ -24,6 +45,7 @@ final class BrowserTab {
     final boolean main, firstPartyTree;
     long inputSequence, inputTicket;
     String authorizedId = "", authorizedUrl = "", authorizedAction = "";
+    String referrerKey = "";
     long authorizedVersion;
 
     Frame(

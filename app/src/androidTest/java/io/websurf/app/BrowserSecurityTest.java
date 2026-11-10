@@ -29,6 +29,19 @@ import org.junit.runner.RunWith;
 @RunWith(AndroidJUnit4.class)
 public final class BrowserSecurityTest {
   @Test
+  public void referrerProbeRejectsAPublicChallengeAndConsumesTheExactRequestOnce() {
+    String url = "https://media.test/selected";
+    BrowserTab.ReferrerProbe probe = new BrowserTab.ReferrerProbe(url, 7, "private-frame-key");
+    probe.capture(probe.challenge, 7, url, "https://media.test/private");
+    probe.capture(probe.marker, 6, url, "stale");
+    probe.capture(probe.marker, 7, url + "?other", "wrong source");
+    assertNull(probe.referer.get());
+    probe.capture(probe.marker, 7, url, "");
+    probe.capture(probe.marker, 7, url, "replay");
+    assertEquals("", probe.referer.get());
+  }
+
+  @Test
   public void frameProjectionKeepsCookieGrantOnlyForTheLiveMediaSource() throws Exception {
     JSONObject layout =
         new JSONObject().put("documentId", "child").put("mediaId", "1").put("sourceVersion", 2);

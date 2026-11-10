@@ -138,6 +138,70 @@ public final class DirectMediaLinkTest {
   }
 
   @Test
+  public void decodedVideoWithoutAFreshGetUsesTheCurrentDocumentReferrer() throws Exception {
+    checkDecodedReferrer("/allow-referrer?private=selected", true);
+  }
+
+  @Test
+  public void decodedVideoWithoutAFreshGetHonorsTheCurrentNoReferrerHeader() throws Exception {
+    checkDecodedReferrer("/page?private=selected", false);
+  }
+
+  private void checkDecodedReferrer(String pagePath, boolean sendReferrer) throws Exception {
+    String page = fixture.media() + pagePath;
+    String url = fixture.media() + "/decoded.mp4";
+    String expected = sendReferrer ? page : "";
+    fixture.decodedReferrer = expected;
+    scenario.onActivity(a -> a.navigate(page));
+    await("Selected document did not finish loading", () -> ui(a ->
+        page.equals(a.current.web.getUrl()) && a.current.web.getProgress() == 100));
+    scenario.onActivity(a -> a.current.web.evaluateJavascript(
+        "let video=document.createElement('video');video.preload='auto';"
+            + "video.src='/decoded.mp4';document.body.append(video)", null));
+    await("Browser did not decode the selected source", () -> ui(a ->
+        a.current.videos.values().stream().anyMatch(v -> url.equals(v.url) && v.height == 360)
+            && a.current.resources.get(url).requestHeadersCaptured));
+    assertTrue(fixture.hits.stream().anyMatch(hit ->
+        hit.path().equals("/decoded.mp4") && hit.browser() && hit.referrer().equals(expected)));
+    scenario.onActivity(a -> {
+      VideoTarget target = a.current.videos.values().stream()
+          .filter(v -> url.equals(v.url)).findFirst().get();
+      WebResource row = a.current.resources.get(url);
+      assertEquals(expected, referrer(a.playbackHeadersFor(row, target)));
+      // Preserve the real decoded element, but reproduce a renderer memory-cache hit that
+      // delivered no media request to this document's WebViewClient.
+      row.headers.clear();
+      row.requestHeadersCaptured = false;
+      row.capturedDocument = null;
+      a.openTarget(a.current, target, true);
+    });
+    awaitPlaying();
+    assertTrue(fixture.hits.stream().anyMatch(hit ->
+        hit.path().equals("/decoded.mp4") && !hit.browser() && hit.referrer().equals(expected)));
+    assertEquals(0, fixture.networkProbes.get());
+    String id = ui(a -> {
+      WebResource row = a.current.resources.get(url);
+      assertFalse(row.requestHeadersCaptured);
+      assertEquals("", referrer(a.mediaHeadersFor(row)));
+      VideoTarget selected = a.activeTarget;
+      Map<String, String> transfer = a.playbackHeadersFor(row, selected);
+      assertEquals(expected, referrer(transfer));
+      String job = DownloadService.enqueue(a, url, "Decoded video", transfer, row.mime);
+      a.closePlayer(false, false);
+      assertEquals("", referrer(a.playbackHeadersFor(row, selected)));
+      return job;
+    });
+    jobs.add(id);
+    assertEquals(expected, referrer(DownloadStore.get(context, id).headers));
+    await("Download did not complete", () -> "completed".equals(DownloadStore.get(context, id).state));
+  }
+
+  private static String referrer(Map<String, String> headers) {
+    return headers.entrySet().stream().filter(e -> e.getKey().equalsIgnoreCase("Referer"))
+        .map(Map.Entry::getValue).findFirst().orElse("");
+  }
+
+  @Test
   public void nativePlaybackBlocksRedirectAndHlsSegmentOnOtherLoopbackPort() throws Exception {
     try (FixtureHttp.Canary privateService = new FixtureHttp.Canary()) {
       fixture.privateTarget = privateService.base() + "/private.ts";
@@ -427,8 +491,10 @@ public final class DirectMediaLinkTest {
     final ServerSocket socket = FixtureHttp.listen();
     final ExecutorService pool = Executors.newCachedThreadPool();
     final AtomicInteger rejected = new AtomicInteger();
+    final AtomicInteger networkProbes = new AtomicInteger();
     final byte[] video;
     volatile String privateTarget;
+    volatile String decodedReferrer = "";
     volatile boolean closed;
 
     Fixture() throws Exception {
@@ -473,7 +539,8 @@ public final class DirectMediaLinkTest {
         if (first == null) return;
         String path = first.split(" ")[1];
         boolean isMedia =
-            path.equals("/export") || path.equals("/clip.mp4") || path.startsWith("/restricted");
+            path.equals("/export") || path.equals("/clip.mp4") || path.equals("/decoded.mp4")
+                || path.startsWith("/restricted");
         Map<String, String> headers = new HashMap<>();
         for (String line; (line = reader.readLine()) != null && !line.isEmpty(); ) {
           int split = line.indexOf(':');
@@ -482,11 +549,15 @@ public final class DirectMediaLinkTest {
                 line.substring(0, split).toLowerCase(Locale.ROOT),
                 line.substring(split + 1).trim());
         }
+        if (headers.containsKey(BrowserTab.ReferrerProbe.HEADER.toLowerCase(Locale.ROOT)))
+          networkProbes.incrementAndGet();
         byte[] body;
         String extra = "", status = "200 OK", mime = "video/mp4";
         if (!isMedia) {
           mime = "text/html; charset=utf-8";
-          extra = "Referrer-Policy: no-referrer\r\n";
+          extra = path.startsWith("/allow-referrer?") ? "" : "Referrer-Policy: no-referrer\r\n";
+          if (path.endsWith("?private=selected"))
+            extra += "Set-Cookie: decoded=ready; Path=/decoded.mp4; HttpOnly; SameSite=Strict\r\n";
           body =
               ("<!doctype html><meta name='viewport'"
                    + " content='width=device-width,initial-scale=1'><title>Export fixture</title><a"
@@ -505,7 +576,10 @@ public final class DirectMediaLinkTest {
           status = "302 Found";
           extra = "Location: " + privateTarget + "\r\n";
           body = new byte[0];
-        } else if (headers.containsKey("referer") && !headers.get("referer").isBlank()) {
+        } else if (path.equals("/decoded.mp4")
+            ? !decodedReferrer.equals(headers.getOrDefault("referer", ""))
+                || !headers.getOrDefault("cookie", "").contains("decoded=ready")
+            : !headers.getOrDefault("referer", "").isBlank()) {
           rejected.incrementAndGet();
           status = "403 Forbidden";
           body = new byte[0];
@@ -524,9 +598,9 @@ public final class DirectMediaLinkTest {
             extra = "Content-Range: bytes " + from + "-" + to + "/" + video.length + "\r\n";
           }
           body = Arrays.copyOfRange(video, from, to + 1);
-          extra +=
-              "Accept-Ranges: bytes\r\n"
-                  + "Content-Disposition: attachment; filename=\"fixture.mp4\"\r\n";
+          extra += "Accept-Ranges: bytes\r\n";
+          if (!path.equals("/decoded.mp4"))
+            extra += "Content-Disposition: attachment; filename=\"fixture.mp4\"\r\n";
         }
         if (isMedia)
           hits.add(

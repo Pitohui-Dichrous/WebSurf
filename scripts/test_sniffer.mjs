@@ -93,7 +93,7 @@ class Media extends Element {
 for(const key of ['currentTime','duration','paused','ended','playbackRate','volume','muted','readyState','error'])
   Object.defineProperty(Media.prototype,key,{configurable:true,get(){return this._native[key];},set(v){this._native[key]=v;}});
 
-function harness({media=[],width=400,height=700,childFrame=false,dark=false,ancestors,credentialless=false,documentStart=true}={}){
+function harness({media=[],width=400,height=700,childFrame=false,dark=false,ancestors,credentialless=false,documentStart=true,probeCalls,controlled=false}={}){
   const messages=[],timers=[],mutations=[],frames=[],images=[],links=[],parentPosts=[];let clock=10000,rafCalls=0;
   const document=new Events();
   document.body=new Element('BODY',bounds(0,0,width,height));document.body.ownerDocument=document;
@@ -107,6 +107,14 @@ function harness({media=[],width=400,height=700,childFrame=false,dark=false,ance
     matchMedia:()=>colorPreference,requestAnimationFrame(callback){rafCalls++;timers.push({at:clock+16,callback});return timers.length;}});
   document.defaultView=window;
   class PageMedia extends Media{}
+  if(probeCalls){
+    window.fetch=(url,options)=>{probeCalls.push({url,options});return Promise.resolve({});};
+    window.crypto={getRandomValues(values){return values.fill(12345);}};
+    window.ServiceWorkerContainer=class{get controller(){return controlled?{}:null;}};
+    window.navigator={serviceWorker:new window.ServiceWorkerContainer()};
+    Object.defineProperty(PageMedia.prototype,'currentSrc',{get(){return Object.getOwnPropertyDescriptor(this,'currentSrc').value;}});
+    Object.defineProperty(PageMedia.prototype,'readyState',{get(){return this._native.readyState;}});
+  }
   Object.defineProperty(PageMedia.prototype,'play',{configurable:true,writable:true,value:Media.prototype.play});
   window.HTMLMediaElement=PageMedia;
   media.forEach(v=>Object.setPrototypeOf(v,PageMedia.prototype));
@@ -145,6 +153,32 @@ test('sealed frame registration requires every ancestor to share the media docum
   assert.equal(frame([]),false);
   assert.equal(frame(undefined),false);
   assert.equal(harness({credentialless:true}).events("hello")[0].firstPartyTree,false);
+});
+
+test('only a native command probes a decoded first-party source using a private frame marker',()=>{
+  const url='https://page.example/movie.mp4';
+  for(const mode of ['decoded','preload-none','controlled','foreign-ancestor']){
+    const probeCalls=[],video=new Media({url});
+    if(mode==='preload-none')video._native.readyState=0;
+    const h=harness({media:[video],probeCalls,childFrame:true,controlled:mode==='controlled',
+      ancestors:[mode==='foreign-ancestor'?'https://foreign.example':'https://page.example']});
+    h.ack();
+    const command={action:'referrer',url,token:'public-native-challenge',documentId:h.documentId,
+      mediaId:h.id(video),sourceVersion:1};
+    h.window.fetch=()=>{throw new Error('page replaced fetch');};
+    assert.equal(h.window.__websurf.command(command,true),false);
+    assert.equal(probeCalls.length,0);
+    h.window.WebSurfObserver.onmessage({data:JSON.stringify({documentId:h.documentId,epoch:7,command})});
+    assert.equal(probeCalls.length,mode==='decoded'?1:0);
+    if(mode==='decoded'){
+      const {options}=probeCalls[0], key=h.events('hello')[0].referrerKey;
+      assert.equal(probeCalls[0].url,url);assert.equal(options.method,'HEAD');
+      assert.equal(options.mode,'same-origin');assert.equal(options.cache,'only-if-cached');
+      assert.equal(options.credentials,'omit');assert.equal(options.redirect,'error');
+      assert.equal(options.headers['X-WebSurf-Referrer-Probe'],command.token+'.'+key);
+      assert.ok(key);assert.ok(!JSON.stringify(h.parentPosts).includes(key));
+    }
+  }
 });
 
 // A native player can safely accept only a deliberate media gesture, never the first autoplay.
