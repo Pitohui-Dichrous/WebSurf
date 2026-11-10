@@ -1,36 +1,33 @@
 {
-  "version": "1.0.4-main",
-  "public_version": "1.0.4",
-  "version_code": 15,
+  "version": "1.1.0-main",
+  "public_version": "1.1.0",
+  "version_code": 17,
   "channel": "stable",
   "branch": "main",
-  "date": "2026-11-09",
-  "change_scope": "Reduce the luminance of persistent browser controls, outline the dark takeover button, and periodically shift small marks within fixed touch targets.",
+  "date": "2026-11-11",
+  "change_scope": "Harden native web media, previews, HLS downloads and source packaging. Preserve the browser's referrer policy when taking over or downloading cached first-party video.",
   "release_checks": {
-    "java_tests": 45,
-    "javascript_tests": 62,
-    "version_helper_tests": 7,
+    "java_tests": 62,
+    "javascript_tests": 71,
+    "python_tests": 18,
     "lint_errors": 0,
-    "lint_warnings": 51,
-    "release_signature": "Verified against the previous production certificate",
+    "lint_warnings": 50,
+    "release_signature": "APK signature verified against the installed production app before upgrading.",
     "certificate_sha256": "b4d6077e325aa73bb0af70ea5b05b338268e79f209f0207402501d8f4f2a1f9c",
-    "zip_alignment": "Verified",
+    "zip_alignment": "16 KiB alignment check passed.",
     "device": "Physical Android 14 device",
-    "upgrade_install": "Updated the production app in place from 1.0.3 (14) to 1.0.4 (15). The first installation time was preserved and the on-device base APK matched the release APK.",
-    "release_launch": "Successful cold start after the update"
+    "upgrade_install": "Updated io.websurf.app in place from 1.0.4 (15) to 1.1.0 (17). The first installation time was preserved and the installed base APK matched the signed release APK byte for byte.",
+    "release_launch": "Cold start succeeded and MainActivity was resumed."
   },
   "feature_verification": {
-    "android_tests": 16,
-    "build": "Debug instrumentation on Android 14 hardware using local synthetic webpages",
-    "suites": [
-      "AcidDesignTest (7)",
-      "ThemeResourceUiTest (4)",
-      "ScrollPlaybackTest (5)"
-    ],
-    "coverage": "Both toolbar palettes, contrast and pressed states, badge containment, tab number alignment, original hit targets, native video scrolling and theme changes on the same page. A separate real-time run tapped the local page roughly every two seconds for over a minute. Hardware-composited window crops confirmed that WS and the menu glyph moved while their touch bounds stayed fixed."
+    "reviewed_commit": "8978f8df164928eb9efd530ce431d13326bae50f",
+    "merge_commit": "f08bd29d9507322ef4ff65c59483d68246af41f7",
+    "android_tests": 141,
+    "build": "Debug instrumentation on Android 14 hardware using synthetic test media, on the reviewed PR tree before promotion. The release build uses the same application source.",
+    "coverage": "The complete device suite passed. The denied-notification case also ran separately with permission revoked. Regression cases cover cached protected video with and without referrers, player downloads, frame isolation, media address policy, HLS byte ranges, cache, playback controls and navigation."
   },
   "inherited_baseline": {
-    "scope": "The transfer, HLS conversion and shared-cache implementations are unchanged. Their dedicated device suites were not rerun for this browser chrome patch."
+    "scope": "The earlier full cloud scan targeted d0d4feed3d96a2755382d855ad6e0394a1148ba3. All host and device test counts above are from this release process."
   },
-  "apk_sha256": "f6357b573bf6ded34e26e60617323963cbcdeb62f6a321529d7d7c1faa7f358e"
+  "apk_sha256": "f3ef1926c7f38ef71f16c491634304eec289a8bbd1a3fa14db81dba1d2645a94"
 }
