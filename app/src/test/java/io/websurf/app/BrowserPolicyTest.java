@@ -34,15 +34,30 @@ public class BrowserPolicyTest {
     headers.put("Authorization", "Bearer test");
     headers.put("User-Agent", "Browser");
     headers.put("Referer", "https://page.example/watch");
-    Map<String, String> same =
-        ScopedHttpDataSource.scoped(
-            "https://media.example/master.m3u8", "https://media.example/chunk.ts", headers);
+    String root = "https://media.example/private/master.m3u8";
+    Map<String, String> same = MediaRequestPolicy.headers(root, root, headers, url -> null);
     assertEquals("private=1", same.get("Cookie"));
+    assertEquals("Bearer test", same.get("Authorization"));
+    Map<String, String> sibling =
+        MediaRequestPolicy.headers(
+            root, "https://media.example/public/chunk.ts", headers, url -> "other=2");
+    assertFalse(sibling.containsKey("Cookie"));
+    assertFalse(sibling.containsKey("Authorization"));
+    Map<String, String> authorized =
+        MediaRequestPolicy.headers(
+            root, "https://media.example/private/chunk.ts", headers, url -> "private=1; newauth=2");
+    assertEquals("private=1", authorized.get("Cookie"));
     Map<String, String> other =
-        ScopedHttpDataSource.scoped(
-            "https://media.example/master.m3u8", "https://cdn.example/chunk.ts", headers);
+        MediaRequestPolicy.headers(
+            root,
+            "https://cdn.example/chunk.ts",
+            headers,
+            url -> {
+              throw new AssertionError("Cross-site cookie store was accessed");
+            });
     assertFalse(other.containsKey("Cookie"));
     assertFalse(other.containsKey("Authorization"));
+    assertEquals("https://page.example/", other.get("Referer"));
     assertEquals("Browser", other.get("User-Agent"));
     assertFalse(
         ScopedHttpDataSource.sameOrigin("https://media.example/a", "http://media.example/b"));
@@ -50,6 +65,64 @@ public class BrowserPolicyTest {
         ScopedHttpDataSource.sameOrigin("https://media.example/a", "https://media.example:8443/b"));
     assertTrue(
         ScopedHttpDataSource.sameOrigin("https://media.example/a", "https://media.example:443/b"));
+  }
+
+  @Test
+  public void remoteMediaNeverOpensLocalUrisOrDowngrades() throws Exception {
+    String root = "https://media.example/main.m3u8";
+    for (String child :
+        new String[] {
+          "content://provider/item",
+          "file:///private/file",
+          "data:audio/mp4,abcd",
+          "asset:///packaged",
+          "HTTP://cdn.example/cleartext"
+        }) {
+      assertThrows(java.io.IOException.class, () -> MediaRequestPolicy.requireNetwork(root, child));
+      assertThrows(
+          java.io.IOException.class,
+          () -> io.websurf.app.download.HlsPlaylist.resolve(root, child));
+    }
+    MediaRequestPolicy.requireNetwork(root, "https://cdn.example/segment");
+    MediaRequestPolicy.requireNetwork("http://media.example/list", "http://cdn.example/segment");
+  }
+
+  @Test
+  public void onlyExactObservedFirstDocumentRequestsSurviveInitialNavigation() {
+    BrowserTab tab = new BrowserTab();
+    tab.initialPage = "https://app.example/watch?part=1#start";
+    String page = "https://app.example/watch?part=1";
+    String media = "https://app.example/video.mp4";
+    Map<String, String> browser = Map.of("referer", page);
+    assertTrue(tab.initialRequest(media, browser));
+    assertFalse(tab.initialRequest("https://third.example/video", browser));
+    assertFalse(tab.initialRequest(media, Map.of("Referer", "https://app.example/watch?part=2")));
+    assertFalse(tab.initialRequest(media, Map.of()));
+    WebResource observed = new WebResource(media), hint = new WebResource(media + "?hint");
+    observed.requestHeadersCaptured = true;
+    observed.headers.putAll(browser);
+    tab.resources.put(media, observed);
+    tab.resources.put(hint.url, hint);
+    tab.epoch = 1;
+    tab.resetResources(page);
+    assertEquals(Map.of(media, observed), tab.resources);
+    tab.epoch = 2;
+    tab.resetResources(page);
+    assertTrue(tab.resources.isEmpty());
+    assertFalse(tab.initialRequest(media, browser));
+    BrowserTab popup = new BrowserTab();
+    assertFalse(popup.initialRequest(media, browser));
+  }
+
+  @Test
+  public void registeredVideoSourceCanLoseCookiesButCannotGainNewPairs() {
+    VideoTarget source = new VideoTarget();
+    source.sourceCookies = "login=old; session=ok";
+    assertEquals(
+        "login=old; session=ok", source.remainingSourceCookies("session=ok; login=old; other=new"));
+    assertEquals("session=ok", source.remainingSourceCookies("session=ok; login=new"));
+    assertEquals("", source.remainingSourceCookies(null));
+    assertEquals("", new VideoTarget().remainingSourceCookies("login=old; session=ok"));
   }
 
   @Test

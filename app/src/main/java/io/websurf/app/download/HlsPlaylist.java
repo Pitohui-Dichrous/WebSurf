@@ -1,6 +1,8 @@
 package io.websurf.app.download;
 
+import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.StringReader;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -17,6 +19,9 @@ public final class HlsPlaylist {
   public boolean endList;
   public boolean discontinuity;
   public double duration;
+  // Count the expanded ASCII URLs, including the repeated playlist base, before retaining them.
+  private int remainingUrlChars = 4 * 1024 * 1024;
+  private int remainingReferences = 100_000;
 
   private HlsPlaylist(String url) {
     this.url = url;
@@ -109,7 +114,8 @@ public final class HlsPlaylist {
     String nextRange = null, previousRangeUrl = "";
     long sequence = 0, nextOffset = 0;
     double segmentDuration = -1;
-    for (String raw : text.split("\\r?\\n")) {
+    BufferedReader lines = new BufferedReader(new StringReader(text));
+    for (String raw; (raw = lines.readLine()) != null; ) {
       String line = raw.trim();
       if (line.isEmpty()) continue;
       if (line.startsWith("#EXT-X-STREAM-INF:")) {
@@ -119,7 +125,7 @@ public final class HlsPlaylist {
         if ("AUDIO".equals(a.get("TYPE")) && a.containsKey("URI")) {
           p.audio.add(
               new Audio(
-                  resolve(url, a.get("URI")),
+                  p.resolveReference(a.get("URI")),
                   a.getOrDefault("GROUP-ID", ""),
                   a.getOrDefault("NAME", "音轨"),
                   "YES".equals(a.get("DEFAULT"))));
@@ -137,13 +143,13 @@ public final class HlsPlaylist {
         else if ("AES-128".equals(method)
             && "identity".equals(a.getOrDefault("KEYFORMAT", "identity"))
             && a.containsKey("URI")) {
-          key = new Key(resolve(url, a.get("URI")), a.getOrDefault("IV", ""));
+          key = new Key(p.resolveReference(a.get("URI")), a.getOrDefault("IV", ""));
         } else throw new IOException("此视频使用受保护的加密格式，无法下载");
       } else if (line.startsWith("#EXT-X-MAP:")) {
         Map<String, String> a = attributes(afterColon(line));
         if (!a.containsKey("URI")) throw new IOException("m3u8 初始化片段缺少地址");
         if (key != null && key.iv.isEmpty()) throw new IOException("加密初始化片段缺少 IV");
-        init = new Init(resolve(url, a.get("URI")), parseRange(a.get("BYTERANGE"), 0), key);
+        init = new Init(p.resolveReference(a.get("URI")), parseRange(a.get("BYTERANGE"), 0), key);
       } else if (line.startsWith("#EXT-X-MEDIA-SEQUENCE:")) {
         sequence = number(afterColon(line), "分片序号");
       } else if (line.startsWith("#EXT-X-BYTERANGE:")) {
@@ -163,7 +169,7 @@ public final class HlsPlaylist {
         if (!Double.isFinite(segmentDuration) || segmentDuration < 0)
           throw new IOException("无效的分片时长");
       } else if (!line.startsWith("#")) {
-        String resolved = resolve(url, line);
+        String resolved = p.resolveReference(line);
         if (variant != null) {
           long bandwidth = number(variant.getOrDefault("BANDWIDTH", "0"), "码率");
           p.variants.add(
@@ -187,13 +193,23 @@ public final class HlsPlaylist {
           p.duration += segmentDuration;
           nextRange = null;
           segmentDuration = -1;
-          if (p.segments.size() > 100000) throw new IOException("播放列表超过支持的分片数量");
         }
       }
     }
     if (variant != null) throw new IOException("清晰度条目缺少播放地址");
     if (p.variants.isEmpty() && p.segments.isEmpty()) throw new IOException("播放列表没有视频片段");
     return p;
+  }
+
+  private String resolveReference(String reference) throws IOException {
+    if (reference.length() > 16_384 || url.length() > 16_384) throw new IOException("播放列表中的地址过长");
+    String resolved = resolve(url, reference);
+    if (resolved.length() > 16_384) throw new IOException("播放列表中的地址过长");
+    if (remainingReferences == 0 || resolved.length() > remainingUrlChars)
+      throw new IOException("播放列表的地址总量超过限制");
+    remainingReferences--;
+    remainingUrlChars -= resolved.length();
+    return resolved;
   }
 
   public Variant bestVariant() {
@@ -212,13 +228,15 @@ public final class HlsPlaylist {
 
   public static String resolve(String base, String relative) throws IOException {
     try {
-      URI result = new URI(base).resolve(relative.trim());
+      URI parent = new URI(base);
+      URI result = relative.trim().isEmpty() ? parent : parent.resolve(relative.trim());
       String scheme = result.getScheme();
       if (!("https".equalsIgnoreCase(scheme) || "http".equalsIgnoreCase(scheme))
           || result.getHost() == null
           || result.getRawUserInfo() != null) {
         throw new IOException("仅支持 HTTP 或 HTTPS 视频地址");
       }
+      io.websurf.app.MediaRequestPolicy.requireNetwork(base, result.toASCIIString());
       return result.toASCIIString();
     } catch (java.net.URISyntaxException | IllegalArgumentException e) {
       throw new IOException("视频地址无效", e);

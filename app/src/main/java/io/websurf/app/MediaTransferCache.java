@@ -95,6 +95,11 @@ public final class MediaTransferCache {
             .get();
   }
 
+  static DataSource.Factory remotePlayback(
+      Context context, String source, Map<String, String> headers, boolean hls) {
+    return playback(context, source, headers, new ScopedHttpDataSource.Factory(source, headers, hls));
+  }
+
   /** Playback reads downloaded spans and uses its secure HTTP transport for remaining holes. */
   public static DataSource.Factory playback(
       Context context, String source, Map<String, String> headers, DataSource.Factory upstream) {

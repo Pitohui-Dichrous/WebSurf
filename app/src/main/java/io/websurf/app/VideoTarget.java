@@ -8,6 +8,21 @@ import org.json.JSONObject;
 
 /** A snapshot of one DOM video, scoped to its document and source generation. */
 final class VideoTarget {
+  static final String[] LAYOUT_FIELDS = {
+    "rect",
+    "clip",
+    "contentClip",
+    "topScrollX",
+    "topScrollY",
+    "visualOffsetX",
+    "visualOffsetY",
+    "viewportWidth",
+    "viewportHeight",
+    "viewportScale",
+    "scrollPolicy",
+    "layoutRevision"
+  };
+  boolean checkingRemoval;
   String documentId, mediaId, url, page, title;
   long sourceVersion;
   double time, duration, rate, volume;
@@ -18,7 +33,8 @@ final class VideoTarget {
   float topScrollX, topScrollY, visualOffsetX, visualOffsetY;
   boolean nativeScrollFollow = true;
   long layoutRevision;
-  String poster = "";
+  String poster = "", sourceCookies = "";
+  WebResource.DocumentReferrer documentReferrer;
   boolean nativeFailed;
   List<QualitySource> qualitySources = List.of();
 
@@ -32,12 +48,44 @@ final class VideoTarget {
     return documentId + ":" + mediaId;
   }
 
+  boolean sameSourceAs(VideoTarget other) {
+    return other != null
+        && sourceVersion == other.sourceVersion
+        && documentId.equals(other.documentId)
+        && mediaId.equals(other.mediaId)
+        && url.equals(other.url);
+  }
+
+  String remainingSourceCookies(String current) {
+    return MediaRequestPolicy.remainingCookiePairs(sourceCookies, current);
+  }
+
+  int retainedCharacters() {
+    int size =
+        documentId.length()
+            + mediaId.length()
+            + url.length()
+            + page.length()
+            + title.length()
+            + poster.length()
+            + sourceCookies.length();
+    if (documentReferrer != null)
+      size += documentReferrer.page().length() + documentReferrer.policy().length();
+    for (QualitySource q : qualitySources)
+      size += q.url().length() + q.mime().length() + q.label().length();
+    return size;
+  }
+
   static VideoTarget read(JSONObject e, VideoTarget previous) {
     VideoTarget t = new VideoTarget();
     t.documentId = e.optString("documentId");
     t.mediaId = e.optString("mediaId");
     t.sourceVersion = e.optLong("sourceVersion", 0);
     t.url = e.optString("url", previous == null ? "" : previous.url);
+    if (t.sameSourceAs(previous)) {
+      t.sourceCookies = previous.sourceCookies;
+      t.documentReferrer = previous.documentReferrer;
+    }
     t.page = e.optString("page", previous == null ? "" : previous.page);
     t.title = e.optString("title", previous == null ? "网页视频" : previous.title);
     t.time = e.optDouble("time", previous == null ? 0 : previous.time);
@@ -78,11 +126,9 @@ final class VideoTarget {
             : previous == null || previous.nativeScrollFollow;
     t.layoutRevision = e.optLong("layoutRevision", previous == null ? 0 : previous.layoutRevision);
     t.poster = e.optString("poster", previous == null ? "" : previous.poster);
+    // Only the native decoder can authorize recovery onto the next source.
     t.nativeFailed =
-        e.optBoolean("nativeFailed")
-            || (previous != null
-                && previous.sourceVersion == t.sourceVersion
-                && previous.nativeFailed);
+        previous != null && previous.sourceVersion == t.sourceVersion && previous.nativeFailed;
     if (e.has("qualitySources")) {
       JSONArray values = e.optJSONArray("qualitySources");
       ArrayList<QualitySource> choices = new ArrayList<>();
@@ -110,12 +156,15 @@ final class VideoTarget {
 
   private static RectF rectangle(JSONObject o) {
     if (o == null) return new RectF();
-    float x = (float) o.optDouble("left", o.optDouble("x", 0));
-    float y = (float) o.optDouble("top", o.optDouble("y", 0));
-    return new RectF(
-        x,
-        y,
-        (float) o.optDouble("right", x + o.optDouble("width", 0)),
-        (float) o.optDouble("bottom", y + o.optDouble("height", 0)));
+    double x = o.optDouble("left", o.optDouble("x", 0));
+    double y = o.optDouble("top", o.optDouble("y", 0));
+    double right = o.optDouble("right", x + o.optDouble("width", 0));
+    double bottom = o.optDouble("bottom", y + o.optDouble("height", 0));
+    // Preserve offscreen elements on long pages, but reject impossible CSS coordinates
+    // before narrowing to float. The native view separately bounds actual pixel dimensions.
+    double limit = 1 << 27;
+    if (!(x >= -limit && y >= -limit && right <= limit && bottom <= limit
+        && x < right && y < bottom)) return new RectF();
+    return new RectF((float) x, (float) y, (float) right, (float) bottom);
   }
 }

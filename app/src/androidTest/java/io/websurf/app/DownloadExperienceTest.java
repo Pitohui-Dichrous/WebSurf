@@ -36,11 +36,9 @@ import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.lang.reflect.Method;
-import java.net.HttpURLConnection;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
-import java.net.URL;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
@@ -120,10 +118,7 @@ public final class DownloadExperienceTest {
         receiver,
         new IntentFilter(DownloadService.ACTION_CHANGED),
         ContextCompat.RECEIVER_NOT_EXPORTED);
-    scenario =
-        ActivityScenario.launch(
-            new Intent(context, MainActivity.class)
-                .setData(Uri.parse(BASE + "/?experience=" + System.nanoTime())));
+    scenario = FixtureHttp.launchHomepage(context, BASE + "/?experience=" + System.nanoTime());
     await(
         "Browser window did not become visible",
         10000,
@@ -522,21 +517,8 @@ public final class DownloadExperienceTest {
     return null;
   }
 
-  private JSONArray requests() throws Exception {
-    HttpURLConnection connection =
-        (HttpURLConnection) new URL(BASE + "/api/requests").openConnection();
-    connection.setConnectTimeout(3000);
-    connection.setReadTimeout(5000);
-    try (java.io.InputStream input = connection.getInputStream()) {
-      return new JSONArray(
-          new String(input.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8));
-    } finally {
-      connection.disconnect();
-    }
-  }
-
   private double latestRequestTime() throws Exception {
-    JSONArray records = requests();
+    JSONArray records = FixtureHttp.requests(BASE);
     double latest = 0;
     for (int i = 0; i < records.length(); i++)
       latest = Math.max(latest, records.getJSONObject(i).optDouble("time"));
@@ -550,7 +532,7 @@ public final class DownloadExperienceTest {
   }
 
   private List<String> hlsPathsAfter(double mark) throws Exception {
-    JSONArray records = requests();
+    JSONArray records = FixtureHttp.requests(BASE);
     List<String> paths = new ArrayList<>();
     for (int i = 0; i < records.length(); i++) {
       org.json.JSONObject row = records.getJSONObject(i);
@@ -569,6 +551,8 @@ public final class DownloadExperienceTest {
 
   private static WebResource video(String url, String title, String mime) {
     WebResource r = new WebResource(url);
+    r.frozenDownloadHeaders = true;
+    r.headers.put(NativeMediaHttp.LOCAL_ORIGIN, java.net.URI.create(url).resolve("/").toString());
     r.title = title;
     r.mime = mime;
     r.classify();

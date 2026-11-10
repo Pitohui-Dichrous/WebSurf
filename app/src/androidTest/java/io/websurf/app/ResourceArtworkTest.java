@@ -4,14 +4,12 @@ import static org.junit.Assert.*;
 
 import android.animation.ValueAnimator;
 import android.content.Context;
-import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.drawable.Animatable;
 import android.graphics.drawable.Drawable;
-import android.net.Uri;
 import android.os.SystemClock;
 import android.view.View;
 import android.view.ViewGroup;
@@ -64,9 +62,7 @@ public final class ResourceArtworkTest {
     oldDark = appearance.getBoolean("dark", true);
     assertTrue(browser.edit().putBoolean("auto_play", false).commit());
     server = new Fixture();
-    scenario =
-        ActivityScenario.launch(
-            new Intent(context, MainActivity.class).setData(Uri.parse(server.base() + "/page")));
+    scenario = FixtureHttp.launchHomepage(context, server.base() + "/page");
     await("Isolated page did not load", () -> ui(a -> a.current.web.getProgress() == 100));
   }
 
@@ -88,6 +84,17 @@ public final class ResourceArtworkTest {
       assertTrue(edit.commit());
       Ui.configure(context);
     }
+  }
+
+  @Test
+  public void malformedFixtureInputLeavesArtworkResponderAvailable() throws Exception {
+    assertEquals("HTTP/1.1 400 Bad Request", FixtureHttp.probeStatus(server.socket, "malformed"));
+    // This fixture serves full images regardless of Range.
+    assertEquals(
+        "HTTP/1.1 200 OK",
+        FixtureHttp.probeStatus(server.socket, "GET /wide.png HTTP/1.1\r\nRange: bytes=oops"));
+    assertEquals(
+        "HTTP/1.1 200 OK", FixtureHttp.probeStatus(server.socket, "GET /wide.png HTTP/1.1"));
   }
 
   @Test
@@ -229,7 +236,11 @@ public final class ResourceArtworkTest {
                 image.title = "异步预览";
                 ResourceRow result =
                     new ResourceRow(
-                        a, image, a.previewLoader, Map.of(), rowActions::incrementAndGet);
+                        a,
+                        image,
+                        a.previewLoader,
+                        Map.of(NativeMediaHttp.LOCAL_ORIGIN, server.base() + "/"),
+                        rowActions::incrementAndGet);
                 body.addView(result);
                 return result;
               });
@@ -304,7 +315,12 @@ public final class ResourceArtworkTest {
                       new WebResource(server.base() + "/" + name + ".png?theme=" + theme);
                   image.title = name + " 不透明缩略图";
                   ResourceRow result =
-                      new ResourceRow(a, image, a.previewLoader, Map.of(), () -> {});
+                      new ResourceRow(
+                          a,
+                          image,
+                          a.previewLoader,
+                          Map.of(NativeMediaHttp.LOCAL_ORIGIN, server.base() + "/"),
+                          () -> {});
                   body.addView(result);
                   return result;
                 });
@@ -449,7 +465,7 @@ public final class ResourceArtworkTest {
   }
 
   private static final class Fixture implements AutoCloseable {
-    final ServerSocket socket = new ServerSocket(0);
+    final ServerSocket socket = FixtureHttp.listen();
     final ExecutorService pool = Executors.newCachedThreadPool();
     volatile CountDownLatch requested = new CountDownLatch(1), release = new CountDownLatch(1);
     final AtomicInteger mediaRequests = new AtomicInteger(), previewRequests = new AtomicInteger();
@@ -501,9 +517,8 @@ public final class ResourceArtworkTest {
         BufferedReader reader =
             new BufferedReader(
                 new InputStreamReader(connection.getInputStream(), StandardCharsets.US_ASCII));
-        String first = reader.readLine();
-        if (first == null) return;
-        String path = first.split(" ")[1].split("\\?", 2)[0];
+        OutputStream output = connection.getOutputStream();
+        String path = FixtureHttp.requestTarget(reader, output).split("\\?", 2)[0];
         while (true) {
           String line = reader.readLine();
           if (line == null || line.isEmpty()) break;
@@ -532,7 +547,6 @@ public final class ResourceArtworkTest {
           status = "404 Not Found";
           body = new byte[0];
         }
-        OutputStream output = connection.getOutputStream();
         output.write(
             ("HTTP/1.1 "
                     + status

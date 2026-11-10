@@ -3,10 +3,8 @@ package io.websurf.app;
 import static org.junit.Assert.*;
 
 import android.content.Context;
-import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
-import android.net.Uri;
 import android.os.SystemClock;
 import android.view.MotionEvent;
 import android.view.View;
@@ -36,10 +34,7 @@ public class UiCaptureTest {
     boolean oldDark = Ui.isDark(context);
     prefs.edit().putBoolean("auto_play", true).commit();
     Ui.setDark(context, false);
-    scenario =
-        ActivityScenario.launch(
-            new Intent(context, MainActivity.class)
-                .setData(Uri.parse("http://127.0.0.1:8765/?capture")));
+    scenario = FixtureHttp.launchHomepage(context, "http://127.0.0.1:8765/?capture");
     try {
       await(
           "Fixture did not load",
@@ -137,7 +132,7 @@ public class UiCaptureTest {
                       a,
                       "http://127.0.0.1:8765/public/hls/master.m3u8",
                       "WebSurf 720p",
-                      java.util.Collections.emptyMap(),
+                      java.util.Map.of(NativeMediaHttp.LOCAL_ORIGIN, "http://127.0.0.1:8765/"),
                       "application/vnd.apple.mpegurl"));
       await(
           "HLS download did not complete",

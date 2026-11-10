@@ -3,9 +3,7 @@ package io.websurf.app;
 import static org.junit.Assert.*;
 
 import android.content.Context;
-import android.content.Intent;
 import android.graphics.Rect;
-import android.net.Uri;
 import android.os.Bundle;
 import android.os.SystemClock;
 import android.view.MotionEvent;
@@ -21,6 +19,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
+import org.json.JSONObject;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -36,9 +35,8 @@ public final class ScrollPlaybackTest {
   public void openScrollingVideo() throws Exception {
     Context context = ApplicationProvider.getApplicationContext();
     scenario =
-        ActivityScenario.launch(
-            new Intent(context, MainActivity.class)
-                .setData(Uri.parse("http://127.0.0.1:8765/scroll.html?run=" + System.nanoTime())));
+        FixtureHttp.launchHomepage(
+            context, "http://127.0.0.1:8765/scroll.html?run=" + System.nanoTime());
     await(
         "Scrolling fixture video was not discovered",
         10000,
@@ -56,7 +54,6 @@ public final class ScrollPlaybackTest {
                   .findFirst()
                   .orElseThrow();
           a.openTarget(a.current, target, true);
-          a.player.setRepeatMode(Player.REPEAT_MODE_ONE);
           return null;
         });
     await(
@@ -73,11 +70,43 @@ public final class ScrollPlaybackTest {
                         && a.videoChrome.isShown()
                         && a.hasWindowFocus()
                         && !a.current.web.isLayoutRequested()));
+    ui(
+        a -> {
+          a.player.setRepeatMode(Player.REPEAT_MODE_ONE);
+          return null;
+        });
   }
 
   @After
   public void closeFixture() {
     if (scenario != null) scenario.close();
+  }
+
+  @Test
+  public void oversizedPageGeometryCannotGrowTheNativeVideoSurface() throws Exception {
+    JSONObject excessive = new JSONObject("{\"left\":0,\"top\":0,\"width\":1e300,\"height\":1e300}");
+    JSONObject negative = new JSONObject("{\"left\":0,\"top\":0,\"width\":-1,\"height\":90}");
+    for (JSONObject invalid : new JSONObject[]{excessive, negative}) {
+      assertTrue(VideoTarget.read(new JSONObject().put("rect", invalid), null).rect.isEmpty());
+    }
+    ui(a -> {
+      VideoTarget target = a.current.videos.get(a.activeTarget.key());
+      android.graphics.RectF original = new android.graphics.RectF(target.rect);
+      int width = a.videoChrome.getLayoutParams().width;
+      int height = a.videoChrome.getLayoutParams().height;
+      try {
+        target.rect.set(0, 0, 32000, 32000);
+        a.layoutNativeInline();
+        assertEquals(View.INVISIBLE, a.anchorClip.getVisibility());
+        assertEquals(width, a.videoChrome.getLayoutParams().width);
+        assertEquals(height, a.videoChrome.getLayoutParams().height);
+      } finally {
+        target.rect.set(original);
+        a.layoutNativeInline();
+      }
+      assertEquals(View.VISIBLE, a.anchorClip.getVisibility());
+      return null;
+    });
   }
 
   @Test

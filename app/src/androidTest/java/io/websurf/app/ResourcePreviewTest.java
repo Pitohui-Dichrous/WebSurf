@@ -29,6 +29,7 @@ public final class ResourcePreviewTest {
   @Before
   public void setup() throws Exception {
     server = new Fixture();
+    headers.put(NativeMediaHttp.LOCAL_ORIGIN, server.base() + "/");
     headers.put("User-Agent", "WebSurf-preview-test");
     headers.put("Referer", server.base() + "/page");
     headers.put("Cookie", "preview_private=1");
@@ -38,6 +39,17 @@ public final class ResourcePreviewTest {
           loader = new ResourcePreviewLoader();
           CookieManager.getInstance().setCookie(server.base(), "preview_private=1; Path=/");
         });
+  }
+
+  @Test
+  public void malformedFixtureInputLeavesPreviewResponderAvailable() throws Exception {
+    assertEquals("HTTP/1.1 400 Bad Request", FixtureHttp.probeStatus(server.socket, "malformed"));
+    assertEquals(
+        "HTTP/1.1 416 Range Not Satisfiable",
+        FixtureHttp.probeStatus(server.socket, "GET /cover.png HTTP/1.1\r\nRange: bytes=foo-1"));
+    assertEquals(
+        "HTTP/1.1 206 Partial Content",
+        FixtureHttp.probeStatus(server.socket, "GET /cover.png HTTP/1.1\r\nRange: bytes=0-1"));
   }
 
   @After
@@ -115,13 +127,44 @@ public final class ResourcePreviewTest {
   }
 
   @Test
-  public void posterRedirectDoesNotForwardAnotherOriginCredentials() throws Exception {
-    WebResource resource = new WebResource(server.base() + "/master.m3u8");
-    resource.posterUrl = server.base() + "/poster-redirect";
-    ResourcePreviewLoader.Result result = load(resource);
-    assertNotNull(result.bitmap);
-    assertEquals(1, server.crossRequests.get());
-    assertEquals(0, server.credentialLeaks.get());
+  public void secureDocumentCannotPreviewCleartextEvenOnAnAuthorizedOrigin() throws Exception {
+    WebResource clear = new WebResource(server.base() + "/poster.png");
+    assertNotNull(load(clear).bitmap);
+    int requestsBefore = server.requests.get();
+    clear.notePreviewContext("https://secure.example/page");
+    clear.notePreviewContext(server.base());
+    assertNull(load(clear).bitmap);
+    assertEquals(requestsBefore, server.requests.get());
+  }
+
+  @Test
+  public void posterAndPosterRedirectCannotContactAnotherLoopbackPort() throws Exception {
+    try (FixtureHttp.Canary privateService = new FixtureHttp.Canary()) {
+      server.posterRedirect = privateService.base() + "/redirect-target.png";
+      for (String poster :
+          List.of(privateService.base() + "/poster.png", server.base() + "/poster-redirect")) {
+        WebResource resource = new WebResource(server.base() + "/master.m3u8");
+        resource.posterUrl = poster;
+        ResourcePreviewLoader.Result result = load(resource);
+        assertNull(result.bitmap);
+        assertEquals("360p / 720p", resource.availableQualities);
+        assertEquals(0, privateService.connections.get());
+      }
+      assertEquals("Two approved manifests and the redirect entry", 3, server.requests.get());
+    }
+  }
+
+  @Test
+  public void initialImageFrameAndPlaylistInspectionCannotContactUngrantedLoopback()
+      throws Exception {
+    headers.remove(NativeMediaHttp.LOCAL_ORIGIN);
+    try (FixtureHttp.Canary privateService = new FixtureHttp.Canary()) {
+      for (String file : List.of("/image.png", "/clip.mp4", "/master.m3u8")) {
+        WebResource resource = new WebResource(privateService.base() + file);
+        assertNull(load(resource).bitmap);
+        assertEquals(file, 0, privateService.connections.get());
+      }
+    }
   }
 
   @Test
@@ -239,14 +282,13 @@ public final class ResourcePreviewTest {
   }
 
   private static final class Fixture implements AutoCloseable {
-    final ServerSocket socket = new ServerSocket(0);
+    final ServerSocket socket = FixtureHttp.listen();
     final ExecutorService pool = Executors.newCachedThreadPool();
     final AtomicInteger requests = new AtomicInteger(),
         transferred = new AtomicInteger(),
         segmentRequests = new AtomicInteger(),
-        crossRequests = new AtomicInteger(),
-        credentialLeaks = new AtomicInteger(),
         authenticationFailures = new AtomicInteger();
+    volatile String posterRedirect;
     final byte[] video, blackIntro, shortVideo, poster, master;
     final CountDownLatch delayedPosterRequested = new CountDownLatch(1),
         delayedPosterRelease = new CountDownLatch(1);
@@ -294,9 +336,8 @@ public final class ResourcePreviewTest {
         BufferedReader input =
             new BufferedReader(
                 new InputStreamReader(connection.getInputStream(), StandardCharsets.US_ASCII));
-        String first = input.readLine();
-        if (first == null) return;
-        String path = first.split(" ")[1];
+        OutputStream output = connection.getOutputStream();
+        String path = FixtureHttp.requestTarget(input, output);
         requests.incrementAndGet();
         Map<String, String> headers = new HashMap<>();
         String line;
@@ -307,7 +348,6 @@ public final class ResourcePreviewTest {
                 line.substring(0, colon).toLowerCase(Locale.ROOT),
                 line.substring(colon + 1).trim());
         }
-        OutputStream output = connection.getOutputStream();
         if (path.equals("/delayed-poster")) {
           delayedPosterRequested.countDown();
           try {
@@ -319,16 +359,11 @@ public final class ResourcePreviewTest {
         }
         if (path.equals("/poster-redirect")) {
           output.write(
-              ("HTTP/1.1 302 Found\r\nLocation: http://localhost:"
-                      + socket.getLocalPort()
-                      + "/cross-poster\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+              ("HTTP/1.1 302 Found\r\nLocation: "
+                      + posterRedirect
+                      + "\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
                   .getBytes(StandardCharsets.US_ASCII));
           return;
-        }
-        if (path.equals("/cross-poster")) {
-          crossRequests.incrementAndGet();
-          if (headers.getOrDefault("cookie", "").contains("preview_private")
-              || headers.containsKey("authorization")) credentialLeaks.incrementAndGet();
         }
         if (path.equals("/video.mp4")
             && (!headers.getOrDefault("cookie", "").contains("preview_private=1")
@@ -350,22 +385,10 @@ public final class ResourcePreviewTest {
                         : path.equals("/master.m3u8") ? master : poster;
         if (path.endsWith(".ts") || path.equals("/low.m3u8") || path.equals("/high.m3u8"))
           segmentRequests.incrementAndGet();
-        int start = 0, end = data.length - 1;
         String range = headers.get("range");
-        boolean partial = range != null && range.startsWith("bytes=");
-        if (partial) {
-          String[] pieces = range.substring(6).split("-", 2);
-          start = Integer.parseInt(pieces[0]);
-          if (pieces.length > 1 && !pieces[1].isEmpty())
-            end = Math.min(end, Integer.parseInt(pieces[1]));
-        }
-        if (start > end) {
-          output.write(
-              "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-                  .getBytes(StandardCharsets.US_ASCII));
-          return;
-        }
-        int length = end - start + 1;
+        boolean partial = range != null;
+        FixtureHttp.Range slice = FixtureHttp.range(range, data.length, true, output);
+        int length = slice.length();
         String response =
             "HTTP/1.1 "
                 + (partial ? "206 Partial Content" : "200 OK")
@@ -373,11 +396,17 @@ public final class ResourcePreviewTest {
                 + length
                 + "\r\nConnection: close\r\n"
                 + (partial
-                    ? "Content-Range: bytes " + start + "-" + end + "/" + data.length + "\r\n"
+                    ? "Content-Range: bytes "
+                        + slice.start()
+                        + "-"
+                        + slice.end()
+                        + "/"
+                        + data.length
+                        + "\r\n"
                     : "")
                 + "\r\n";
         output.write(response.getBytes(StandardCharsets.US_ASCII));
-        output.write(data, start, length);
+        output.write(data, slice.start(), length);
         output.flush();
         transferred.addAndGet(length);
       } catch (IOException ignored) {

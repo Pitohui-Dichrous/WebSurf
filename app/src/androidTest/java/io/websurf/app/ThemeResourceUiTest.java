@@ -3,14 +3,12 @@ package io.websurf.app;
 import static org.junit.Assert.*;
 
 import android.content.Context;
-import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Rect;
 import android.graphics.drawable.Drawable;
-import android.net.Uri;
 import android.os.SystemClock;
 import android.view.MotionEvent;
 import android.webkit.WebView;
@@ -66,10 +64,7 @@ public final class ThemeResourceUiTest {
     } finally {
       health.disconnect();
     }
-    scenario =
-        ActivityScenario.launch(
-            new Intent(context, MainActivity.class)
-                .setData(Uri.parse(BASE + "/?theme-ui=" + System.nanoTime())));
+    scenario = FixtureHttp.launchHomepage(context, BASE + "/?theme-ui=" + System.nanoTime());
     waitForPage();
   }
 

@@ -8,11 +8,9 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
-import android.webkit.CookieManager;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -28,6 +26,7 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import okhttp3.Response;
 
 /** Bounded, asynchronous previews. It never uses a remote URL directly in the platform decoder. */
 public final class ResourcePreviewLoader implements AutoCloseable {
@@ -109,6 +108,7 @@ public final class ResourcePreviewLoader implements AutoCloseable {
     pending.put(key, waitingList);
     String url = resource.url,
         poster = known == null || known.bitmap == null ? resource.posterUrl : "";
+    boolean secure = resource.httpsPreviewContext;
     boolean video = resource.isVideo(),
         hls = resource.isHls(),
         picture = "图片".equals(resource.kind);
@@ -116,7 +116,7 @@ public final class ResourcePreviewLoader implements AutoCloseable {
     try {
       workers.execute(
           () -> {
-            Result result = inspect(url, poster, video, hls, picture, requestHeaders);
+            Result result = inspect(url, poster, video, hls, picture, secure, requestHeaders);
             main.post(
                 () -> {
                   List<Waiting> receivers = pending.remove(key);
@@ -190,10 +190,12 @@ public final class ResourcePreviewLoader implements AutoCloseable {
       boolean video,
       boolean hls,
       boolean picture,
+      boolean secure,
       Map<String, String> headers) {
     Result result = new Result();
     result.inspectionComplete = true;
-    if (!WebResource.isHttp(url)) return result;
+    if (!WebResource.isHttp(url) || (secure && !url.regionMatches(true, 0, "https:", 0, 6)))
+      return result;
     try {
       if (picture || WebResource.isHttp(poster)) {
         String imageUrl = picture ? url : poster;
@@ -361,6 +363,8 @@ public final class ResourcePreviewLoader implements AutoCloseable {
     String value =
         resource.url
             + "\n"
+            + resource.httpsPreviewContext
+            + "\n"
             + resource.pageUrl
             + "\n"
             + resource.posterUrl
@@ -368,9 +372,6 @@ public final class ResourcePreviewLoader implements AutoCloseable {
             + resource.previewIdentity
             + "\n"
             + new TreeMap<>(headers);
-    value += "\n" + CookieManager.getInstance().getCookie(resource.url);
-    if (WebResource.isHttp(resource.posterUrl))
-      value += "\n" + CookieManager.getInstance().getCookie(resource.posterUrl);
     try {
       byte[] digest =
           MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8));
@@ -454,7 +455,7 @@ public final class ResourcePreviewLoader implements AutoCloseable {
    * Shares the browser media credential policy; refuses ignored seeks rather than reading a whole
    * file.
    */
-  private static HttpURLConnection connect(
+  private static Response connect(
       String original,
       String address,
       Map<String, String> headers,
@@ -463,29 +464,30 @@ public final class ResourcePreviewLoader implements AutoCloseable {
       Budget budget)
       throws IOException {
     String url = address;
+    MediaRequestPolicy.requireNetwork(original, url);
+    Map<String, String> scopedHeaders = MediaRequestPolicy.headers(original, url, headers);
     for (int redirects = 0; redirects < 8; redirects++) {
       budget.request();
-      if (!WebResource.isHttp(url)) throw new IOException("Unsupported preview URL");
-      HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection();
-      connection.setInstanceFollowRedirects(false);
-      connection.setConnectTimeout(2500);
-      connection.setReadTimeout(3000);
-      connection.setRequestProperty("Accept-Encoding", "identity");
-      for (Map.Entry<String, String> entry :
-          ScopedHttpDataSource.scoped(original, url, headers).entrySet())
-        connection.setRequestProperty(entry.getKey(), entry.getValue());
-      String cookie = CookieManager.getInstance().getCookie(url);
-      if (cookie != null && !cookie.isBlank()) connection.setRequestProperty("Cookie", cookie);
-      connection.setRequestProperty("Range", "bytes=" + position + "-" + (position + length - 1));
+      Response connection =
+          NativeMediaHttp.get(
+                  original,
+                  url,
+                  headers.get(NativeMediaHttp.LOCAL_ORIGIN),
+                  scopedHeaders,
+                  "bytes=" + position + "-" + (position + length - 1),
+                  null,
+                  2500,
+                  3000)
+              .execute();
       try {
-        int code = connection.getResponseCode();
+        int code = connection.code();
         if (code >= 300 && code <= 399) {
-          String location = connection.getHeaderField("Location");
+          String location = connection.header("Location");
           if (location == null) throw new IOException("Missing redirect location");
           String next = new URL(new URL(url), location).toString();
-          if (url.startsWith("https:") && next.startsWith("http:"))
-            throw new IOException("Insecure redirect");
-          connection.disconnect();
+          MediaRequestPolicy.requireNetwork(url, next);
+          connection.close();
+          scopedHeaders = MediaRequestPolicy.headers(url, next, scopedHeaders);
           url = next;
           continue;
         }
@@ -493,13 +495,13 @@ public final class ResourcePreviewLoader implements AutoCloseable {
         if (position > 0 && code != 206)
           throw new IOException("Server does not support media ranges");
         if (code == 206) {
-          String range = connection.getHeaderField("Content-Range");
+          String range = connection.header("Content-Range");
           if (range == null || !range.startsWith("bytes " + position + "-"))
             throw new IOException("Invalid media range");
         }
         return connection;
       } catch (IOException | RuntimeException failure) {
-        connection.disconnect();
+        connection.close();
         throw failure;
       }
     }
@@ -509,8 +511,8 @@ public final class ResourcePreviewLoader implements AutoCloseable {
   private static byte[] readSmall(
       String original, String url, Map<String, String> headers, int max, Budget budget)
       throws IOException {
-    HttpURLConnection connection = connect(original, url, headers, 0, max, budget);
-    try (InputStream input = connection.getInputStream();
+    Response connection = connect(original, url, headers, 0, max, budget);
+    try (InputStream input = connection.body().byteStream();
         ByteArrayOutputStream output = new ByteArrayOutputStream()) {
       byte[] buffer = new byte[8192];
       int count;
@@ -521,7 +523,7 @@ public final class ResourcePreviewLoader implements AutoCloseable {
       }
       return output.toByteArray();
     } finally {
-      connection.disconnect();
+      connection.close();
     }
   }
 
@@ -550,14 +552,14 @@ public final class ResourcePreviewLoader implements AutoCloseable {
       byte[] bytes = chunks.get(start);
       if (bytes == null) {
         int requestSize = (int) Math.min(CHUNK, size < 0 ? CHUNK : size - start);
-        HttpURLConnection connection = connect(url, url, headers, start, requestSize, budget);
-        try (InputStream input = connection.getInputStream();
+        Response connection = connect(url, url, headers, start, requestSize, budget);
+        try (InputStream input = connection.body().byteStream();
             ByteArrayOutputStream output = new ByteArrayOutputStream()) {
-          String range = connection.getHeaderField("Content-Range");
+          String range = connection.header("Content-Range");
           if (range != null && range.contains("/"))
             size = positiveLong(range.substring(range.lastIndexOf('/') + 1));
-          else if (start == 0 && connection.getContentLengthLong() > 0)
-            size = connection.getContentLengthLong();
+          else if (start == 0 && connection.body().contentLength() > 0)
+            size = connection.body().contentLength();
           byte[] scratch = new byte[8192];
           int count;
           while ((count =
@@ -571,7 +573,7 @@ public final class ResourcePreviewLoader implements AutoCloseable {
           chunks.put(start, bytes);
           while (chunks.size() > 8) chunks.remove(chunks.keySet().iterator().next());
         } finally {
-          connection.disconnect();
+          connection.close();
         }
       }
       int relative = (int) (position - start), count = Math.min(length, bytes.length - relative);

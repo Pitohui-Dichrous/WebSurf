@@ -3,9 +3,7 @@ package io.websurf.app;
 import static org.junit.Assert.*;
 
 import android.content.Context;
-import android.content.Intent;
 import android.content.SharedPreferences;
-import android.net.Uri;
 import android.os.SystemClock;
 import android.view.MotionEvent;
 import android.webkit.WebView;
@@ -150,10 +148,7 @@ abstract class RecoveryFixture {
     oldAuto = preferences.getBoolean("auto_play", true);
     assertTrue(preferences.edit().putBoolean("auto_play", true).commit());
     run = Long.toString(System.nanoTime());
-    scenario =
-        ActivityScenario.launch(
-            new Intent(context, MainActivity.class)
-                .setData(Uri.parse(BASE + "/recovery.html?run=" + run)));
+    scenario = FixtureHttp.launchHomepage(context, BASE + "/recovery.html?run=" + run);
     await(
         "Recovery fixture's HTML video did not load; check server/reverse and Sec-Fetch-Dest"
             + " support",

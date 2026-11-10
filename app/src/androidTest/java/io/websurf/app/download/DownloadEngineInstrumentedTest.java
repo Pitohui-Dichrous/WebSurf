@@ -9,7 +9,9 @@ import android.net.Uri;
 import androidx.test.core.app.ActivityScenario;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
+import io.websurf.app.FixtureHttp;
 import io.websurf.app.MainActivity;
+import io.websurf.app.NativeMediaHttp;
 import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
@@ -54,11 +56,17 @@ public class DownloadEngineInstrumentedTest {
     oldThreads = preferences.getInt("download_threads", 8);
     assertTrue(preferences.edit().putInt("download_threads", 4).commit());
     server = new FixtureServer();
+    android.webkit.CookieManager.getInstance()
+        .setCookie(server.base(), "fixture=authorized; Path=/");
   }
 
   @After
   public void cleanup() throws Exception {
-    if (server != null) server.close();
+    if (server != null) {
+      android.webkit.CookieManager.getInstance()
+          .setCookie(server.base(), "fixture=; Max-Age=0; Path=/");
+      server.close();
+    }
     for (Uri uri : outputs) context.getContentResolver().delete(uri, null, null);
     for (String id : storedIds) DownloadStore.remove(context, id);
     android.content.SharedPreferences.Editor edit =
@@ -66,6 +74,25 @@ public class DownloadEngineInstrumentedTest {
     if (hadThreads) edit.putInt("download_threads", oldThreads);
     else edit.remove("download_threads");
     assertTrue(edit.commit());
+  }
+
+  @Test
+  public void rangeOutsideFixtureReturns416ThenServesValidBytes() throws Exception {
+    for (String path : new String[] {"/document", "/range-stable"}) {
+      String request =
+          "GET "
+              + path
+              + " HTTP/1.1\r\nCookie: fixture=authorized\r\n"
+              + "Referer: https://example.test/watch\r\nUser-Agent: WebSurf-test\r\n"
+              + "If-Range: \"fixture\"\r\nRange: bytes=";
+      for (String invalid : new String[] {"0-2147483646", "99999999999999999999-5", "3-1"}) {
+        assertEquals(
+            "HTTP/1.1 416 Range Not Satisfiable",
+            FixtureHttp.probeStatus(server.socket, request + invalid));
+      }
+      assertEquals(
+          "HTTP/1.1 206 Partial Content", FixtureHttp.probeStatus(server.socket, request + "0-1"));
+    }
   }
 
   @Test
@@ -106,6 +133,46 @@ public class DownloadEngineInstrumentedTest {
   @Test
   public void byteRangeSegmentsExportCompleteMp4() throws Exception {
     assertMp4(download("/ranges.m3u8"), true);
+  }
+
+  @Test
+  public void oversizedChunkedByteRangeAbortsBeforeEofOnEveryAttempt() throws Exception {
+    server.files.put("/overlong.ts", new byte[] {42});
+    server.files.put(
+        "/overlong.m3u8",
+        ("#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1,\n#EXT-X-BYTERANGE:1@0\n"
+                + "overlong.ts\n#EXT-X-ENDLIST\n")
+            .getBytes(StandardCharsets.UTF_8));
+    DownloadStore.Job job = job("/overlong.m3u8");
+    try {
+      new DownloadEngine(context, job, current -> {}).run();
+      fail("Expected range rejection");
+    } catch (java.io.IOException expected) {
+      assertTrue(expected.toString(), expected.getMessage().contains("超过请求范围"));
+    }
+    assertEquals(3, java.util.Collections.frequency(server.requests, "/overlong.ts"));
+    assertEquals(0, job.bytes);
+    assertEquals(0, job.completedParts);
+    assertEquals("", job.outputUri);
+    assertFalse(new java.io.File(context.getCacheDir(), "downloads/" + job.id).exists());
+  }
+
+  @Test
+  public void exactChunkedEncryptedByteRangesExportCompleteMp4() throws Exception {
+    String playlist = new String(server.files.get("/aes.m3u8"), StandardCharsets.UTF_8);
+    long encryptedBytes = 0;
+    for (Map.Entry<String, byte[]> entry : server.files.entrySet()) {
+      if (entry.getKey().startsWith("/enc-segment")) {
+        String name = entry.getKey().substring(1);
+        int length = entry.getValue().length;
+        playlist = playlist.replace(name, "#EXT-X-BYTERANGE:" + length + "@0\n" + name);
+        encryptedBytes += length;
+      }
+    }
+    server.files.put("/aes-ranges.m3u8", playlist.getBytes(StandardCharsets.UTF_8));
+    DownloadStore.Job job = download("/aes-ranges.m3u8");
+    assertMp4(job, true);
+    assertEquals(encryptedBytes, job.bytes);
   }
 
   @Test
@@ -292,14 +359,70 @@ public class DownloadEngineInstrumentedTest {
   }
 
   @Test
-  public void crossOriginRedirectDoesNotLeakCookieOrAuthorization() throws Exception {
-    DownloadStore.Job spec = job("/cross-redirect");
-    spec.headers.put("Authorization", "Bearer private-fixture-token");
-    new DownloadEngine(context, spec, current -> {}).run();
-    outputs.add(Uri.parse(spec.outputUri));
-    assertFalse(server.crossHeaders.containsKey("cookie"));
-    assertFalse(server.crossHeaders.containsKey("authorization"));
-    assertEquals("WebSurf-test", server.crossHeaders.get("user-agent"));
+  public void legacyJobsKeepQueueStateButDropUnscopedCredentialsOnLoad() throws Exception {
+    DownloadStore.Job job = job("/document");
+    job.headers.put("aUtHoRiZaTiOn", "Bearer legacy");
+    org.json.JSONObject legacy = job.json();
+    legacy.remove("localMediaOrigin");
+    legacy
+        .getJSONObject("headers")
+        .put(NativeMediaHttp.LOCAL_ORIGIN.toLowerCase(java.util.Locale.ROOT), server.base() + "/");
+    legacy.remove("browserScopedHeaders");
+    legacy.remove("mediaScopedCookies");
+    DownloadStore.Job migrated = DownloadStore.Job.from(legacy);
+    assertEquals(job.id, migrated.id);
+    assertEquals(job.url, migrated.url);
+    assertEquals(job.state, migrated.state);
+    assertEquals(Map.of("User-Agent", "WebSurf-test"), migrated.headers);
+    legacy.put("browserScopedHeaders", true);
+    DownloadStore.Job previewJob = DownloadStore.Job.from(legacy);
+    assertFalse(previewJob.headers.keySet().stream().anyMatch("Cookie"::equalsIgnoreCase));
+    assertFalse(
+        DownloadStore.Job.from(previewJob.json()).headers.keySet().stream()
+            .anyMatch("Cookie"::equalsIgnoreCase));
+    assertFalse(
+        DownloadStore.Job.from(legacy).headers.keySet().stream()
+            .anyMatch(NativeMediaHttp.LOCAL_ORIGIN::equalsIgnoreCase));
+    assertEquals(job.headers, DownloadStore.Job.from(job.json()).headers);
+  }
+
+  @Test
+  public void redirectAndHlsChildrenCannotReachAnotherLoopbackService() throws Exception {
+    try (FixtureHttp.Canary privateService = new FixtureHttp.Canary()) {
+      String target = privateService.base() + "/target";
+      server.crossRedirect = target;
+      String segment = "#EXTINF:1,\nsegment00.ts\n#EXT-X-ENDLIST\n";
+      Map<String, String> playlists =
+          Map.of(
+              "/blocked-variant.m3u8", "#EXT-X-STREAM-INF:BANDWIDTH=1234\n" + target + "\n",
+              "/blocked-segment.m3u8",
+                  "#EXT-X-TARGETDURATION:1\n" + segment.replace("segment00.ts", target),
+              "/blocked-key.m3u8",
+                  "#EXT-X-TARGETDURATION:1\n#EXT-X-KEY:METHOD=AES-128,URI=\""
+                      + target
+                      + "\"\n"
+                      + segment,
+              "/blocked-init.m3u8",
+                  "#EXT-X-TARGETDURATION:1\n#EXT-X-MAP:URI=\"" + target + "\"\n" + segment);
+      playlists.forEach(
+          (path, body) ->
+              server.files.put(path, ("#EXTM3U\n" + body).getBytes(StandardCharsets.UTF_8)));
+      List<String> roots = new ArrayList<>(playlists.keySet());
+      roots.add("/cross-redirect");
+      for (String path : roots) {
+        DownloadStore.Job spec = job(path);
+        spec.headers.put("Authorization", "Bearer private-fixture-token");
+        java.io.IOException failure =
+            assertThrows(
+                path,
+                java.io.IOException.class,
+                () -> new DownloadEngine(context, spec, current -> {}).run());
+        assertEquals(path, "拒绝跨来源请求局域网媒体", failure.getMessage());
+        assertTrue(path, server.requests.contains(path));
+        assertEquals(path, "", spec.outputUri);
+        assertEquals(path, 0, privateService.connections.get());
+      }
+    }
   }
 
   @Test
@@ -506,6 +629,7 @@ public class DownloadEngineInstrumentedTest {
     j.id = UUID.randomUUID().toString();
     j.title = "WebSurf integration " + j.id;
     j.url = server.base() + path;
+    j.headers.put(NativeMediaHttp.LOCAL_ORIGIN, server.base() + "/");
     j.headers.put("Referer", "https://example.test/watch");
     j.headers.put("User-Agent", "WebSurf-test");
     j.headers.put("Cookie", "fixture=authorized");
@@ -573,7 +697,7 @@ public class DownloadEngineInstrumentedTest {
   }
 
   private static final class FixtureServer implements AutoCloseable {
-    final ServerSocket socket = new ServerSocket(0);
+    final ServerSocket socket = FixtureHttp.listen();
     final ExecutorService threads = Executors.newCachedThreadPool();
     final Map<String, byte[]> files = new HashMap<>();
     final Map<String, String> contentTypes = new java.util.concurrent.ConcurrentHashMap<>();
@@ -594,7 +718,7 @@ public class DownloadEngineInstrumentedTest {
         new java.util.concurrent.CountDownLatch(8);
     final java.util.concurrent.CountDownLatch wideRange16 =
         new java.util.concurrent.CountDownLatch(16);
-    volatile Map<String, String> crossHeaders = new HashMap<>();
+    volatile String crossRedirect;
     final byte[] pdf =
         "%PDF-1.4\nWebSurf byte-preservation fixture\n%%EOF\n".getBytes(StandardCharsets.UTF_8);
     volatile boolean closed;
@@ -697,12 +821,12 @@ public class DownloadEngineInstrumentedTest {
     private void serve(Socket client) {
       boolean countedRange = false, countedHls = false;
       try (Socket s = client) {
+        s.setSoTimeout(5000);
         BufferedReader reader =
             new BufferedReader(
                 new InputStreamReader(s.getInputStream(), StandardCharsets.US_ASCII));
-        String first = reader.readLine();
-        if (first == null) return;
-        String path = first.split(" ")[1];
+        OutputStream out = s.getOutputStream();
+        String path = FixtureHttp.requestTarget(reader, out);
         requests.add(path);
         Map<String, String> headers = new HashMap<>();
         String line;
@@ -713,23 +837,10 @@ public class DownloadEngineInstrumentedTest {
                 line.substring(0, colon).toLowerCase(java.util.Locale.ROOT),
                 line.substring(colon + 1).trim());
         }
-        OutputStream out = s.getOutputStream();
         if (path.equals("/cross-redirect")) {
           out.write(
-              ("HTTP/1.1 302 Found\r\nLocation: http://localhost:"
-                      + socket.getLocalPort()
-                      + "/cross-target\r\nContent-Length: 0\r\n\r\n")
+              ("HTTP/1.1 302 Found\r\nLocation: " + crossRedirect + "\r\nContent-Length: 0\r\n\r\n")
                   .getBytes(StandardCharsets.US_ASCII));
-          return;
-        }
-        if (path.equals("/cross-target")) {
-          crossHeaders = headers;
-          out.write(
-              ("HTTP/1.1 200 OK\r\nContent-Type: application/pdf\r\nContent-Length: "
-                      + pdf.length
-                      + "\r\n\r\n")
-                  .getBytes(StandardCharsets.US_ASCII));
-          out.write(pdf);
           return;
         }
         if (!"fixture=authorized".equals(headers.get("cookie"))
@@ -777,18 +888,21 @@ public class DownloadEngineInstrumentedTest {
           }
           boolean change = path.equals("/range-changed") && (range || full > 1);
           byte[] entity = path.startsWith("/range-wide-") ? wide : change ? changed : large;
-          byte[] payload = entity;
+          FixtureHttp.Range slice = FixtureHttp.range(null, entity.length, false, out);
           String response = "HTTP/1.1 200 OK\r\n";
           if (range && !path.equals("/range-ignore")) {
-            assertNotNull("Range transfer must be conditional", headers.get("if-range"));
-            String[] bits = headers.get("range").substring(6).split("-");
-            int start = Integer.parseInt(bits[0]), end = Integer.parseInt(bits[1]);
-            payload = Arrays.copyOfRange(entity, start, end + 1);
+            if (!headers.containsKey("if-range")) {
+              out.write(
+                  "HTTP/1.1 412 Precondition Failed\r\nContent-Length: 0\r\n\r\n"
+                      .getBytes(StandardCharsets.US_ASCII));
+              return;
+            }
+            slice = FixtureHttp.range(headers.get("range"), entity.length, false, out);
             response =
                 "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes "
-                    + start
+                    + slice.start()
                     + "-"
-                    + end
+                    + slice.end()
                     + "/"
                     + (entity.length + (path.equals("/range-wrong-total") ? 1 : 0))
                     + "\r\n";
@@ -797,7 +911,7 @@ public class DownloadEngineInstrumentedTest {
               path.equals("/range-weak") ? "W/\"fixture\"" : change ? "\"changed\"" : "\"fixture\"";
           response +=
               "Content-Type: application/octet-stream\r\nContent-Length: "
-                  + payload.length
+                  + slice.length()
                   + "\r\nAccept-Ranges: bytes\r\nETag: "
                   + etag
                   + "\r\nConnection: close\r\n\r\n";
@@ -814,7 +928,7 @@ public class DownloadEngineInstrumentedTest {
             activeRanges.decrementAndGet();
             countedRange = false;
           }
-          out.write(payload);
+          out.write(entity, slice.start(), slice.length());
           out.flush();
           return;
         }
@@ -844,25 +958,39 @@ public class DownloadEngineInstrumentedTest {
         }
         String response = "HTTP/1.1 200 OK\r\n";
         String range = headers.get("range");
+        FixtureHttp.Range slice = FixtureHttp.range(range, body.length, false, out);
         if (range != null) {
-          String[] bits = range.substring(6).split("-");
-          int start = Integer.parseInt(bits[0]), end = Integer.parseInt(bits[1]);
           response =
               "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes "
-                  + start
+                  + slice.start()
                   + "-"
-                  + end
+                  + slice.end()
                   + "/"
                   + body.length
                   + "\r\n";
-          body = Arrays.copyOfRange(body, start, end + 1);
+          if (path.equals("/overlong.ts") || path.startsWith("/enc-segment")) {
+            out.write(
+                (response + "Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+                        + Integer.toHexString(slice.length()) + "\r\n")
+                    .getBytes(StandardCharsets.US_ASCII));
+            out.write(body, slice.start(), slice.length());
+            if (path.equals("/overlong.ts")) {
+              out.write("\r\n1\r\n!\r\n".getBytes(StandardCharsets.US_ASCII));
+              out.flush();
+              reader.read(); // Withhold the final chunk until the client disconnects.
+            } else {
+              out.write("\r\n0\r\n\r\n".getBytes(StandardCharsets.US_ASCII));
+              out.flush();
+            }
+            return;
+          }
         }
         String type =
             path.endsWith(".m3u8")
                 ? "application/vnd.apple.mpegurl"
                 : path.equals("/document") ? "application/pdf" : "application/octet-stream";
         type = contentTypes.getOrDefault(path, type);
-        response += "Content-Type: " + type + "\r\nContent-Length: " + body.length + "\r\n";
+        response += "Content-Type: " + type + "\r\nContent-Length: " + slice.length() + "\r\n";
         if (dispositions.containsKey(path))
           response += "Content-Disposition: " + dispositions.get(path) + "\r\n";
         if (path.equals("/document"))
@@ -874,7 +1002,7 @@ public class DownloadEngineInstrumentedTest {
           activeHls.decrementAndGet();
           countedHls = false;
         }
-        out.write(body);
+        out.write(body, slice.start(), slice.length());
         out.flush();
         if (delayed != null) finishedHls.add(delayed);
       } catch (Exception ignored) {

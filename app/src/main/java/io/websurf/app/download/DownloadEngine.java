@@ -10,9 +10,10 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
 import android.provider.MediaStore;
-import android.webkit.CookieManager;
 import androidx.core.content.FileProvider;
+import io.websurf.app.MediaRequestPolicy;
 import io.websurf.app.MediaTransferCache;
+import io.websurf.app.NativeMediaHttp;
 import java.io.BufferedInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.Closeable;
@@ -23,9 +24,6 @@ import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.net.HttpURLConnection;
-import java.net.URI;
-import java.net.URL;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -45,6 +43,7 @@ import javax.crypto.Cipher;
 import javax.crypto.CipherInputStream;
 import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
+import okhttp3.Call;
 
 /** Downloads locally, then publishes one complete output. No partially written public files. */
 final class DownloadEngine {
@@ -57,7 +56,7 @@ final class DownloadEngine {
   private final Progress progress;
   private final File directory;
   private volatile boolean cancelled;
-  private final Set<HttpURLConnection> activeConnections = ConcurrentHashMap.newKeySet();
+  private final Set<Call> activeConnections = ConcurrentHashMap.newKeySet();
   private volatile ExecutorService workers;
   private final int parallelism;
   private long lastUpdate, speedTime, speedBytes;
@@ -79,7 +78,7 @@ final class DownloadEngine {
 
   void cancel() {
     cancelled = true;
-    for (HttpURLConnection connection : activeConnections) connection.disconnect();
+    for (Call call : activeConnections) call.cancel();
     ExecutorService pool = workers;
     if (pool != null) pool.shutdownNow();
   }
@@ -117,8 +116,7 @@ final class DownloadEngine {
         boolean hls = prefix.startsWith("#EXTM3U");
         if (hls) {
           String outputName =
-              DownloadNames.mp4(
-                  r.url, r.connection.getHeaderField("Content-Disposition"), job.title);
+              DownloadNames.mp4(r.url, r.connection.header("Content-Disposition"), job.title);
           String text = readText(r.input, 8 * 1024 * 1024);
           HlsPlaylist playlist = HlsPlaylist.parse(r.url, text);
           r.close();
@@ -131,7 +129,7 @@ final class DownloadEngine {
             throw new IOException("服务器未返回 m3u8，可能需要重新在网页播放后下载");
           }
           String requestedMime = job.mimeType;
-          job.mimeType = DownloadNames.mime(r.connection.getContentType(), job.mimeType);
+          job.mimeType = DownloadNames.mime(r.connection.header("Content-Type"), job.mimeType);
           if ((requestedMime.startsWith("video/")
                   || requestedMime.startsWith("audio/")
                   || requestedMime.startsWith("image/"))
@@ -140,16 +138,13 @@ final class DownloadEngine {
           }
           job.fileName =
               DownloadNames.choose(
-                  r.url,
-                  r.connection.getHeaderField("Content-Disposition"),
-                  job.title,
-                  job.mimeType);
+                  r.url, r.connection.header("Content-Disposition"), job.title, job.mimeType);
           completed = new File(directory, "direct.bin");
-          job.total = r.connection.getContentLengthLong();
+          job.total = r.connection.body().contentLength();
           Validator validator = Validator.from(r.connection);
           if (parallelism > 1
               && job.total >= 2 * 1024 * 1024L
-              && "bytes".equalsIgnoreCase(r.connection.getHeaderField("Accept-Ranges"))
+              && "bytes".equalsIgnoreCase(r.connection.header("Accept-Ranges"))
               && validator != null) {
             String resolved = r.url;
             long total = job.total;
@@ -333,7 +328,7 @@ final class DownloadEngine {
                 new IvParameterSpec(iv(key.iv, sequence)));
             input = new CipherInputStream(input, cipher);
           }
-          long expected = range != null ? range.length : r.connection.getContentLengthLong();
+          long expected = range != null ? range.length : r.connection.body().contentLength();
           byte[] buffer = new byte[128 * 1024];
           int n;
           while ((n = input.read(buffer)) != -1) {
@@ -389,7 +384,7 @@ final class DownloadEngine {
     workers = null;
     if (pool == null) return;
     pool.shutdownNow();
-    for (HttpURLConnection connection : activeConnections) connection.disconnect();
+    for (Call call : activeConnections) call.cancel();
     boolean interrupted = Thread.interrupted();
     try {
       boolean terminated = false;
@@ -399,8 +394,7 @@ final class DownloadEngine {
         } catch (InterruptedException e) {
           interrupted = true;
         }
-        if (!terminated)
-          for (HttpURLConnection connection : activeConnections) connection.disconnect();
+        if (!terminated) for (Call call : activeConnections) call.cancel();
       }
     } finally {
       if (interrupted) Thread.currentThread().interrupt();
@@ -428,13 +422,15 @@ final class DownloadEngine {
       this.value = value;
     }
 
-    static Validator from(HttpURLConnection c) {
-      String etag = c.getHeaderField("ETag");
+    static Validator from(okhttp3.Response c) {
+      String etag = c.header("ETag");
       if (etag != null && etag.startsWith("\"") && etag.endsWith("\""))
         return new Validator("ETag", etag);
-      String modified = c.getHeaderField("Last-Modified");
-      long last = c.getHeaderFieldDate("Last-Modified", -1),
-          date = c.getHeaderFieldDate("Date", -1);
+      String modified = c.header("Last-Modified");
+      java.util.Date lastModified = c.headers().getDate("Last-Modified"),
+          serverDate = c.headers().getDate("Date");
+      long last = lastModified == null ? -1 : lastModified.getTime(),
+          date = serverDate == null ? -1 : serverDate.getTime();
       return modified != null && last > 0 && date - last >= 60000
           ? new Validator("Last-Modified", modified)
           : null;
@@ -468,7 +464,6 @@ final class DownloadEngine {
                   HlsPlaylist.Range range = new HlsPlaylist.Range(start, end - start);
                   try (Response r = connect(url, range, validator, total);
                       OutputStream out = new FileOutputStream(part)) {
-                    long copied = 0;
                     byte[] buffer = new byte[128 * 1024];
                     int n;
                     while (true) {
@@ -480,11 +475,8 @@ final class DownloadEngine {
                       if (n == -1) break;
                       check();
                       out.write(buffer, 0, n);
-                      copied += n;
                       account(n, true);
-                      if (copied > range.length) throw new RangeRejectedException("下载范围长度发生变化");
                     }
-                    if (copied != range.length) throw new RangeRejectedException("下载范围不完整");
                   }
                   return part;
                 }));
@@ -512,8 +504,8 @@ final class DownloadEngine {
       }
       try (Response response = connect(job.url, null);
           OutputStream out = new FileOutputStream(output)) {
-        job.total = response.connection.getContentLengthLong();
-        String mime = DownloadNames.mime(response.connection.getContentType(), job.mimeType);
+        job.total = response.connection.body().contentLength();
+        String mime = DownloadNames.mime(response.connection.header("Content-Type"), job.mimeType);
         if ((job.mimeType.startsWith("video/")
                 || job.mimeType.startsWith("audio/")
                 || job.mimeType.startsWith("image/"))
@@ -601,127 +593,89 @@ final class DownloadEngine {
   private Response connect(String address, HlsPlaylist.Range range, Validator validator, long total)
       throws IOException {
     String url = HlsPlaylist.resolve(address, "");
+    MediaRequestPolicy.requireNetwork(job.url, url);
+    Map<String, String> scopedHeaders = MediaRequestPolicy.headers(job.url, url, job.headers);
     for (int redirects = 0; redirects < 8; redirects++) {
       check();
-      HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
-      activeConnections.add(c);
-      c.setConnectTimeout(20000);
-      c.setReadTimeout(20000);
-      c.setInstanceFollowRedirects(false);
-      c.setRequestProperty("Accept-Encoding", "identity");
-      boolean capturedCookie = false;
-      for (Map.Entry<String, String> h : job.headers.entrySet()) {
-        String name = h.getKey();
-        if (name.equalsIgnoreCase("Cookie") || name.equalsIgnoreCase("Authorization")) {
-          if (!sameOrigin(job.url, url)) continue;
+      String rangeHeader =
+          range == null ? null : "bytes=" + range.offset + "-" + (range.offset + range.length - 1);
+      Call call =
+          NativeMediaHttp.get(
+              job.url,
+              url,
+              job.headers.get(NativeMediaHttp.LOCAL_ORIGIN),
+              scopedHeaders,
+              rangeHeader,
+              validator == null ? null : validator.value,
+              20000,
+              20000);
+      activeConnections.add(call);
+      okhttp3.Response c = null;
+      boolean handedOff = false;
+      try {
+        check();
+        c = call.execute();
+        int code = c.code();
+        if (code >= 300 && code <= 399) {
+          String location = c.header("Location");
+          if (location == null) throw new IOException("下载重定向缺少地址");
+          String next = HlsPlaylist.resolve(url, location);
+          scopedHeaders = MediaRequestPolicy.headers(url, next, scopedHeaders);
+          url = next;
+          continue;
         }
-        if (name.equalsIgnoreCase("Host")
-            || name.equalsIgnoreCase("Content-Length")
-            || name.equalsIgnoreCase("Range")
-            || name.equalsIgnoreCase("If-Range")
-            || name.equalsIgnoreCase("If-None-Match")
-            || name.equalsIgnoreCase("If-Modified-Since")
-            || name.equalsIgnoreCase("X-WebSurf-Transfer-Scope")
-            || name.equalsIgnoreCase("Accept-Encoding")) continue;
-        if (name.contains("\r")
-            || name.contains("\n")
-            || h.getValue().contains("\r")
-            || h.getValue().contains("\n")) continue;
-        c.setRequestProperty(name, h.getValue());
-        if (name.equalsIgnoreCase("Cookie")) capturedCookie = true;
-      }
-      try {
-        String cookies = CookieManager.getInstance().getCookie(url);
-        if (!capturedCookie && cookies != null && !cookies.isEmpty())
-          c.setRequestProperty("Cookie", cookies);
-      } catch (RuntimeException ignored) {
-      }
-      if (validator != null) c.setRequestProperty("If-Range", validator.value);
-      if (range != null)
-        c.setRequestProperty(
-            "Range", "bytes=" + range.offset + "-" + (range.offset + range.length - 1));
-      int code;
-      try {
-        code = c.getResponseCode();
-      } catch (IOException e) {
-        disconnect(c);
-        throw e;
-      }
-      if (code >= 300 && code <= 399) {
-        String location = c.getHeaderField("Location");
-        disconnect(c);
-        if (location == null) throw new IOException("下载重定向缺少地址");
-        url = HlsPlaylist.resolve(url, location);
-        continue;
-      }
-      if (code < 200 || code >= 300) {
-        disconnect(c);
-        String message = "服务器返回 HTTP " + code + "，请回到网页重新播放后重试";
-        if (validator != null && (code == 412 || code == 416))
-          throw new RangeRejectedException(message);
-        throw new IOException(message);
-      }
-      String encoding = c.getHeaderField("Content-Encoding");
-      if (encoding != null && !encoding.isEmpty() && !"identity".equalsIgnoreCase(encoding)) {
-        disconnect(c);
-        throw new IOException("服务器未返回原始文件数据，请重试");
-      }
-      if (range != null) {
-        String contentRange = c.getHeaderField("Content-Range");
-        String prefix = "bytes " + range.offset + "-" + (range.offset + range.length - 1) + "/";
-        if (code != 206
-            || contentRange == null
-            || !contentRange.startsWith(prefix)
-            || (validator != null
-                && (!contentRange.equals(prefix + total)
-                    || !validator.value.equals(c.getHeaderField(validator.header))))) {
-          disconnect(c);
-          if (validator != null) throw new RangeRejectedException("服务器未正确返回下载范围");
-          throw new IOException("服务器未正确返回视频分片范围");
+        if (code < 200 || code >= 300) {
+          String message = "服务器返回 HTTP " + code + "，请回到网页重新播放后重试";
+          if (validator != null && (code == 412 || code == 416))
+            throw new RangeRejectedException(message);
+          throw new IOException(message);
         }
-      }
-      try {
-        return new Response(c, url, range);
-      } catch (IOException e) {
-        disconnect(c);
-        throw e;
+        String encoding = c.header("Content-Encoding");
+        if (encoding != null && !encoding.isEmpty() && !"identity".equalsIgnoreCase(encoding)) {
+          throw new IOException("服务器未返回原始文件数据，请重试");
+        }
+        if (range != null) {
+          String contentRange = c.header("Content-Range");
+          long contentLength = c.body().contentLength();
+          String prefix = "bytes " + range.offset + "-" + (range.offset + range.length - 1) + "/";
+          if (code != 206
+              || contentRange == null
+              || !contentRange.startsWith(prefix)
+              || (contentLength >= 0 && contentLength != range.length)
+              || (validator != null
+                  && (!contentRange.equals(prefix + total)
+                      || !validator.value.equals(c.header(validator.header))))) {
+            if (validator != null) throw new RangeRejectedException("服务器未正确返回下载范围");
+            throw new IOException("服务器未正确返回视频分片范围");
+          }
+        }
+        Response response = new Response(call, c, url, range);
+        handedOff = true;
+        return response;
+      } finally {
+        if (!handedOff) {
+          activeConnections.remove(call);
+          if (c != null) c.close();
+        }
       }
     }
     throw new IOException("下载重定向次数过多");
   }
 
-  private void disconnect(HttpURLConnection connection) {
-    activeConnections.remove(connection);
-    connection.disconnect();
-  }
-
-  private static boolean sameOrigin(String a, String b) {
-    try {
-      URI x = URI.create(a), y = URI.create(b);
-      int xp =
-          x.getPort() == -1 ? ("https".equalsIgnoreCase(x.getScheme()) ? 443 : 80) : x.getPort();
-      int yp =
-          y.getPort() == -1 ? ("https".equalsIgnoreCase(y.getScheme()) ? 443 : 80) : y.getPort();
-      return x.getScheme().equalsIgnoreCase(y.getScheme())
-          && x.getHost().equalsIgnoreCase(y.getHost())
-          && xp == yp;
-    } catch (RuntimeException e) {
-      return false;
-    }
-  }
-
   private final class Response implements Closeable {
-    final HttpURLConnection connection;
+    final Call call;
+    final okhttp3.Response connection;
     final BufferedInputStream input;
     final String url;
 
-    Response(HttpURLConnection c, String u, HlsPlaylist.Range range) throws IOException {
+    Response(Call call, okhttp3.Response c, String u, HlsPlaylist.Range range) throws IOException {
+      this.call = call;
       connection = c;
       url = u;
       long entityTotal = -1;
-      if (c.getResponseCode() == 200) entityTotal = c.getContentLengthLong();
-      else if (c.getResponseCode() == 206) {
-        String contentRange = c.getHeaderField("Content-Range");
+      if (c.code() == 200) entityTotal = c.body().contentLength();
+      else if (c.code() == 206) {
+        String contentRange = c.header("Content-Range");
         if (contentRange != null) {
           int slash = contentRange.lastIndexOf('/');
           if (slash >= 0) {
@@ -733,7 +687,8 @@ final class DownloadEngine {
           }
         }
       }
-      InputStream raw = c.getInputStream();
+      InputStream raw = c.body().byteStream();
+      if (range != null) raw = new RangeInput(raw, range.length);
       raw =
           MediaTransferCache.capture(
               context,
@@ -741,7 +696,7 @@ final class DownloadEngine {
               job.headers,
               u,
               range == null ? 0 : range.offset,
-              c.getContentLengthLong(),
+              c.body().contentLength(),
               raw,
               entityTotal);
       input = new BufferedInputStream(raw, 64 * 1024);
@@ -752,7 +707,43 @@ final class DownloadEngine {
         input.close();
       } catch (IOException ignored) {
       }
-      disconnect(connection);
+      connection.close();
+      activeConnections.remove(call);
+    }
+  }
+
+  /** Checks the wire bytes before caching, progress accounting or AES decryption. */
+  private static final class RangeInput extends InputStream {
+    private final InputStream source;
+    private final byte[] one = new byte[1];
+    private long remaining;
+
+    RangeInput(InputStream source, long length) {
+      this.source = source;
+      remaining = length;
+    }
+
+    @Override
+    public int read(byte[] buffer, int offset, int length) throws IOException {
+      if (length == 0) return 0;
+      if (remaining == 0) {
+        if (source.read() != -1) throw new RangeRejectedException("服务器返回的数据超过请求范围");
+        return -1;
+      }
+      int n = source.read(buffer, offset, (int) Math.min(remaining, length));
+      if (n < 0) throw new RangeRejectedException("下载范围不完整");
+      remaining -= n;
+      return n;
+    }
+
+    @Override
+    public int read() throws IOException {
+      return read(one, 0, 1) == -1 ? -1 : one[0] & 255;
+    }
+
+    @Override
+    public void close() throws IOException {
+      source.close();
     }
   }
 

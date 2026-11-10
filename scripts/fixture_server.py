@@ -13,9 +13,21 @@ import time
 from urllib.parse import unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1] / "app/src/androidTest/assets/fixtures"
+MEDIA_ROOT = (ROOT / "media").resolve()
+MEDIA_FILES = {path.relative_to(MEDIA_ROOT).as_posix(): path
+               for path in MEDIA_ROOT.rglob("*") if path.is_file()}
 REQUESTS: deque[dict] = deque(maxlen=400)
 LOCK = threading.Lock()
 MIMES = {".m3u8": "application/vnd.apple.mpegurl", ".ts": "video/mp2t", ".mp4": "video/mp4", ".m4a": "audio/mp4", ".key": "application/octet-stream"}
+
+
+def media_file(relative: str) -> Path | None:
+    # Only paths inventoried from the local fixture tree can reach filesystem resolution.
+    file = MEDIA_FILES.get(relative)
+    if file is None:
+        return None
+    candidate = file.resolve()
+    return candidate if candidate.is_relative_to(MEDIA_ROOT) and candidate.is_file() else None
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -92,9 +104,8 @@ class Handler(BaseHTTPRequestHandler):
             relative = route[len("/public/"):]
         else:
             return self.payload(b"Not found", "text/plain", 404)
-        media_root = (ROOT / "media").resolve()
-        file = (media_root / relative).resolve()
-        if not file.is_relative_to(media_root) or not file.is_file():
+        file = media_file(relative)
+        if file is None:
             return self.payload(b"Not found", "text/plain", 404)
         total = file.stat().st_size
         start, end = 0, total - 1

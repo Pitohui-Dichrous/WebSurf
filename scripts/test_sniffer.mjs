@@ -93,7 +93,7 @@ class Media extends Element {
 for(const key of ['currentTime','duration','paused','ended','playbackRate','volume','muted','readyState','error'])
   Object.defineProperty(Media.prototype,key,{configurable:true,get(){return this._native[key];},set(v){this._native[key]=v;}});
 
-function harness({media=[],width=400,height=700,childFrame=false,dark=false}={}){
+function harness({media=[],width=400,height=700,childFrame=false,dark=false,ancestors,credentialless=false,documentStart=true,probeCalls,controlled=false}={}){
   const messages=[],timers=[],mutations=[],frames=[],images=[],links=[],parentPosts=[];let clock=10000,rafCalls=0;
   const document=new Events();
   document.body=new Element('BODY',bounds(0,0,width,height));document.body.ownerDocument=document;
@@ -103,22 +103,34 @@ function harness({media=[],width=400,height=700,childFrame=false,dark=false}={})
     querySelectorAll(selector){return ({'video,audio':media.filter(m=>m.isConnected),img:images,'a[download]':links,'a[href]':links,iframe:frames})[selector]||[];}});
   media.forEach(v=>{v.ownerDocument=document;if(!v.parentElement)document.body.appendChild(v);});
   const colorPreference=Object.assign(new Events(),{matches:dark});
-  const window=new Events();Object.assign(window,{innerWidth:width,innerHeight:height,scrollX:0,scrollY:0,getComputedStyle:e=>e.css||{},
+  const window=new Events();Object.assign(window,{origin:"https://page.example",credentialless,innerWidth:width,innerHeight:height,scrollX:0,scrollY:0,getComputedStyle:e=>e.css||{},
     matchMedia:()=>colorPreference,requestAnimationFrame(callback){rafCalls++;timers.push({at:clock+16,callback});return timers.length;}});
   document.defaultView=window;
   class PageMedia extends Media{}
+  if(probeCalls){
+    window.fetch=(url,options)=>{probeCalls.push({url,options});return Promise.resolve({});};
+    window.crypto={getRandomValues(values){return values.fill(12345);}};
+    window.ServiceWorkerContainer=class{get controller(){return controlled?{}:null;}};
+    window.navigator={serviceWorker:new window.ServiceWorkerContainer()};
+    Object.defineProperty(PageMedia.prototype,'currentSrc',{get(){return Object.getOwnPropertyDescriptor(this,'currentSrc').value;}});
+    Object.defineProperty(PageMedia.prototype,'readyState',{get(){return this._native.readyState;}});
+  }
   Object.defineProperty(PageMedia.prototype,'play',{configurable:true,writable:true,value:Media.prototype.play});
   window.HTMLMediaElement=PageMedia;
   media.forEach(v=>Object.setPrototypeOf(v,PageMedia.prototype));
   window.parent=childFrame?{postMessage(data){parentPosts.push(data);}}:window;
-  const bridge={onmessage:null,postMessage(value){messages.push(JSON.parse(value));}};window.WebSurfObserver=bridge;
+  const bridge={onmessage:null,postMessage(value){
+    assert.ok(value.startsWith('{"seal":'+JSON.stringify(documentStart?'__WEBSURF_DOCUMENT_START_SEAL__':'')+','));
+    const packet=JSON.parse(value);
+    if(packet.observation)assert.equal(packet.seal,documentStart?'__WEBSURF_DOCUMENT_START_SEAL__':'');
+    messages.push(packet.observation||packet);}};window.WebSurfObserver=bridge;
   class Xhr extends Events{open(){}}
   class Clock extends Date{static now(){return clock;}}
-  const context=vm.createContext({window,document,location:{href:'https://page.example/watch'},URL,Event:FakeEvent,Date:Clock,XMLHttpRequest:Xhr,
+  const context=vm.createContext({window,document,location:{href:'https://page.example/watch',origin:'https://page.example',ancestorOrigins:ancestors},Element,URL,Event:FakeEvent,Date:Clock,XMLHttpRequest:Xhr,
     MutationObserver:class{constructor(callback){this.callback=callback;mutations.push(this);}observe(){}},
     PerformanceObserver:class{constructor(callback){this.callback=callback;}observe(){}},
     setTimeout(callback,delay){timers.push({at:clock+delay,callback});return timers.length;}});
-  vm.runInContext(source,context,{filename:'sniffer.js'});
+  vm.runInContext(documentStart?source:source.replace('__WEBSURF_DOCUMENT_START_SEAL__',''),context,{filename:'sniffer.js'});
   const documentId=messages.find(e=>e.type==='hello')?.documentId;assert.ok(documentId);
   return {media,images,links,frames,messages,window,document,context,documentId,parentPosts,colorPreference,rafCalls:()=>rafCalls,
     events:type=>messages.filter(e=>e.type===type),
@@ -132,6 +144,43 @@ function harness({media=[],width=400,height=700,childFrame=false,dark=false}={})
   };
 }
 
+test('sealed frame registration requires every ancestor to share the media document origin',()=>{
+  const frame=ancestors=>harness({childFrame:true,ancestors}).events('hello')[0].firstPartyTree;
+  assert.equal(harness().events('hello')[0].firstPartyTree,true);
+  assert.equal(frame(['https://page.example','https://page.example']),true);
+  assert.equal(frame(['https://cross.example','https://page.example']),false);
+  assert.equal(frame(['null']),false);
+  assert.equal(frame([]),false);
+  assert.equal(frame(undefined),false);
+  assert.equal(harness({credentialless:true}).events("hello")[0].firstPartyTree,false);
+});
+
+test('only a native command probes a decoded first-party source using a private frame marker',()=>{
+  const url='https://page.example/movie.mp4';
+  for(const mode of ['decoded','preload-none','controlled','foreign-ancestor']){
+    const probeCalls=[],video=new Media({url});
+    if(mode==='preload-none')video._native.readyState=0;
+    const h=harness({media:[video],probeCalls,childFrame:true,controlled:mode==='controlled',
+      ancestors:[mode==='foreign-ancestor'?'https://foreign.example':'https://page.example']});
+    h.ack();
+    const command={action:'referrer',url,token:'public-native-challenge',documentId:h.documentId,
+      mediaId:h.id(video),sourceVersion:1};
+    h.window.fetch=()=>{throw new Error('page replaced fetch');};
+    assert.equal(h.window.__websurf.command(command,true),false);
+    assert.equal(probeCalls.length,0);
+    h.window.WebSurfObserver.onmessage({data:JSON.stringify({documentId:h.documentId,epoch:7,command})});
+    assert.equal(probeCalls.length,mode==='decoded'?1:0);
+    if(mode==='decoded'){
+      const {options}=probeCalls[0], key=h.events('hello')[0].referrerKey;
+      assert.equal(probeCalls[0].url,url);assert.equal(options.method,'HEAD');
+      assert.equal(options.mode,'same-origin');assert.equal(options.cache,'only-if-cached');
+      assert.equal(options.credentials,'omit');assert.equal(options.redirect,'error');
+      assert.equal(options.headers['X-WebSurf-Referrer-Probe'],command.token+'.'+key);
+      assert.ok(key);assert.ok(!JSON.stringify(h.parentPosts).includes(key));
+    }
+  }
+});
+
 // A native player can safely accept only a deliberate media gesture, never the first autoplay.
 test('direct media links are observed without fetching or playing them and preserve link referrer policy',()=>{
   const h=harness();h.ack();
@@ -142,6 +191,22 @@ test('direct media links are observed without fetching or playing them and prese
   const links=h.events('resource').filter(e=>e.source==='下载链接');
   assert.equal(links.length,2);assert.equal(links.find(e=>e.url===media.href).referrerPolicy,'no-referrer');
   assert.equal(links.find(e=>e.url===opaque.href).referrerPolicy,'same-origin');assert.equal(h.events('play').length,0);
+});
+
+test('unrequested media never infer policy from a referrer meta snapshot',()=>{
+  const video=new Media(), h=harness({media:[video]});h.ack();
+  // A later no-referrer meta can be removed while an earlier unsafe-url meta remains in the DOM.
+  h.document.querySelector=()=>({content:'unsafe-url'});
+  const anchor=new Element('A');
+  Object.assign(anchor,{href:'https://page.example/export.mp4',referrerPolicy:'origin'});
+  h.links.push(anchor);h.scan();
+  const lastLink=()=>h.events('resource').filter(e=>e.url===anchor.href).at(-1);
+  assert.equal(lastLink().referrerPolicy,'origin');
+  anchor.referrerPolicy='';h.scan();
+  assert.equal(lastLink().referrerPolicy,'');
+  video.src='https://page.example/fresh.mp4';h.scan();
+  assert.equal(h.events('source').at(-1).referrerPolicy,undefined);
+  assert.equal(h.events('resource').filter(e=>e.url===video.src).at(-1).referrerPolicy,undefined);
 });
 
 test('handshake queues data, ignores a foreign ack, and flushes exactly once with document epoch',()=>{
@@ -155,6 +220,30 @@ test('independent documents cannot unlock one another',()=>{
   const a=harness(),b=harness({media:[new Media({playing:true})]});assert.notEqual(a.documentId,b.documentId);
   b.ack(7,a.documentId);assert.equal(b.events('play').length,0);b.ack(8);assert.equal(b.events('play')[0].epoch,8);
 });
+test('a first tap before the hello ack attests immediately and only flushes its matching command',()=>{
+  const main=new Media(),h=harness({media:[main]});
+  h.gesture(main);main.play();main.pause();h.gesture(main);main.play();
+  const inputs=h.events('input');
+  assert.equal(inputs.length,2);assert.equal(h.events('play').length,0);
+  assert.notEqual(inputs[0].inputTicket,inputs[1].inputTicket);
+  for(const input of inputs) {
+    assert.equal(input.epoch,null);assert.equal(input.documentId,h.documentId);
+    assert.equal(input.url,main.src);assert.equal(input.action,'play');
+  }
+  h.tick(2000);h.ack(8);h.ack(9);
+  assert.equal(h.events('input').length,2,'an ack never issues or renews the gesture proof');
+  assert.deepEqual(h.events('play').map(e=>[e.epoch,e.inputTicket,e.mediaId,e.sourceVersion,e.url]),
+    inputs.map(i=>[8,i.inputTicket,i.mediaId,i.sourceVersion,i.url]));
+});
+test('a trusted permanent unload retires only its own subframe and a cached page can re-register',()=>{
+  const h=harness({childFrame:true});h.ack();
+  h.window.dispatch('pagehide',{isTrusted:false});h.window.dispatch('pagehide',{persisted:true});
+  assert.equal(h.events('goodbye').length,0);
+  h.window.dispatch('pageshow',{persisted:true});h.ack();
+  h.window.dispatch('pagehide',{persisted:false});
+  assert.equal(h.events('goodbye').length,1);assert.equal(h.events('goodbye')[0].documentId,h.documentId);
+  assert.ok(!h.parentPosts.some(e=>e.event?.type==='goodbye'));
+});
 test('an autoplay advertisement does not acquire user intent or suppress a later manually played main video',()=>{
   const ad=new Media({playing:true,url:'https://media.example/ad.mp4'}),main=new Media();const h=harness({media:[ad,main]});h.ack();
   assert.equal(h.events('play')[0].userInitiated,false);h.gesture(main);main.play();
@@ -163,9 +252,21 @@ test('an autoplay advertisement does not acquire user intent or suppress a later
 });
 test('synthetic, unrelated and expired gestures cannot authorize takeover',()=>{
   const main=new Media(),ad=new Media({url:'https://media.example/ad.mp4',box:bounds(10,300)});const h=harness({media:[main,ad]});h.ack();
+  h.gesture(main);main.dispatchEvent(new FakeEvent('play'));assert.equal(h.events('play').length,0);h.tick(1801);
   h.gesture(main,{isTrusted:false});main.play();assert.equal(h.events('play').at(-1).userInitiated,false);main.pause();
   h.gesture(ad);main.play();assert.equal(h.events('play').at(-1).userInitiated,false);main.pause();
   h.gesture(main);h.tick(1801);main.play();assert.equal(h.events('play').at(-1).userInitiated,false);
+  assert.deepEqual(h.events('input'),[]);
+});
+test('page JSON hooks cannot observe the seal or replace a signed media observation',()=>{
+  const main=new Media(),h=harness({media:[main]});h.ack();
+  vm.runInContext("Object.prototype.toJSON=function(){ return {type:'takeover', mediaId:'fake'} };"
+    +"JSON.stringify=()=>{throw Error('site hook')};"
+    +"window.WebSurfObserver.postMessage=()=>{throw Error('site hook')}",h.context);
+  h.gesture(main);main.play();
+  assert.equal(h.events('play').at(-1).url,main.src);
+  assert.equal(h.events('input').at(-1).url,main.src);
+  assert.equal(h.events('takeover').length,0);
 });
 test('custom controls in a single-video container can authorize the matching media',()=>{
   const main=new Media(),container=new Element(),button=new Element('BUTTON');container.appendChild(main);container.appendChild(button);
@@ -178,6 +279,8 @@ test('an external custom button calling play identifies its exact media even wit
   let result;button.addEventListener('click',()=>{result=main.play();});button.dispatch('click');
   assert.equal(typeof result.then,'function','the native play promise is preserved');
   assert.equal(h.events('play').at(-1).url,main.src);assert.equal(h.events('play').at(-1).userInitiated,true);
+  assert.deepEqual(h.events('input').map(({action,mediaId,sourceVersion,url})=>[action,mediaId,sourceVersion,url]),
+    [['play',h.id(main),h.events('play').at(-1).sourceVersion,main.src]]);
   ad.play();assert.equal(h.events('play').at(-1).url,ad.src);assert.equal(h.events('play').at(-1).userInitiated,false,'a subsequent automatic ad cannot borrow the click');
 });
 test('a second automatic video started in the same click cannot steal the explicit media call',()=>{
@@ -338,48 +441,65 @@ test('visual viewport panning and zoom produce coordinates relative to the visib
 test('a real child iframe is translated, scaled, bordered and clipped before reaching native',()=>{
   const h=harness();h.ack();const child={},frame=new Element('IFRAME',bounds(40,100,220,140));
   Object.assign(frame,{contentWindow:child,offsetWidth:110,offsetHeight:70,clientLeft:5,clientTop:5,clientWidth:100,clientHeight:60});h.frames.push(frame);
-  const event={type:'layout',mediaId:'9',documentId:'child-doc',epoch:7,sourceVersion:1,page:'https://child.example/',
+  const event={type:'project',mediaId:'9',documentId:'child-doc',epoch:7,sourceVersion:1,page:'https://child.example/',
     rect:bounds(10,10,100,60),clip:bounds(10,10,90,50),viewportWidth:100,viewportHeight:60};
-  h.window.dispatch('message',{source:child,data:{__websurfEvent:true,event}});const output=h.events('layout')[0];
+  h.window.dispatch('message',{source:child,data:{__websurfEvent:true,event}});const output=h.events('project')[0];
   assert.deepEqual(output.rect,bounds(70,130,200,120));assert.deepEqual(output.clip,bounds(70,130,180,100));
-  assert.equal(output.documentId,'child-doc');assert.equal(output.viewportWidth,400);
-  h.window.dispatch('message',{source:{},data:{__websurfEvent:true,event}});assert.equal(h.events('layout').length,1);
+  assert.equal(output.owner,'child-doc');assert.equal(output.viewportWidth,400);
+  h.window.dispatch('message',{source:{},data:{__websurfEvent:true,event}});assert.equal(h.events('project').length,1);
 });
 test('nested iframe forwarding preserves child identity and applies each parent transformation',()=>{
   const child=harness({childFrame:true,width:200,height:300}),grandWindow={},frame=new Element('IFRAME',bounds(20,30,100,100));frame.contentWindow=grandWindow;child.frames.push(frame);child.ack();
-  const input={type:'play',mediaId:'2',documentId:'grand',epoch:7,rect:bounds(10,5,80,50),clip:bounds(10,5,80,50),viewportWidth:100,viewportHeight:100};
+  const input={type:'project',mediaId:'2',documentId:'grand',epoch:7,rect:bounds(10,5,80,50),clip:bounds(10,5,80,50),viewportWidth:100,viewportHeight:100};
   child.window.dispatch('message',{source:grandWindow,data:{__websurfEvent:true,event:input}});
   const forwarded=child.parentPosts.find(e=>e.__websurfEvent).event;assert.equal(forwarded.rect.left,30);assert.equal(forwarded.rect.top,35);
   const top=harness(),parentWindow={},outer=new Element('IFRAME',bounds(50,80,100,150));outer.contentWindow=parentWindow;top.frames.push(outer);top.ack();
   top.window.dispatch('message',{source:parentWindow,data:{__websurfEvent:true,event:forwarded}});
-  const output=top.events('play')[0];assert.equal(output.rect.left,65);assert.equal(output.rect.top,97.5);assert.equal(output.documentId,'grand');
+  const output=top.events('project')[0];assert.equal(output.rect.left,65);assert.equal(output.rect.top,97.5);assert.equal(output.owner,'grand');
 });
 test('removing an iframe immediately retires its cached child and nested media sessions',()=>{
   const h=harness(),child={},frame=new Element('IFRAME');frame.contentWindow=child;h.frames.push(frame);h.ack();
-  const base={type:'play',mediaId:'1',epoch:7,rect:bounds(0,0,100,60),clip:bounds(0,0,100,60),viewportWidth:320,viewportHeight:180};
+  const base={type:'project',mediaId:'1',epoch:7,rect:bounds(0,0,100,60),clip:bounds(0,0,100,60),viewportWidth:320,viewportHeight:180};
   for(const documentId of ['child-doc','nested-doc'])h.window.dispatch('message',{source:child,data:{__websurfEvent:true,event:{...base,documentId}}});
   h.frames.length=0;h.mutation();h.tick(100);
-  assert.deepEqual(h.events('removed').map(e=>e.documentId),['child-doc','nested-doc']);
-  assert.ok(h.events('removed').every(e=>e.reason==='frame-removed'));
+  assert.deepEqual(h.events('unproject').map(e=>e.owner),['child-doc','nested-doc']);
+  assert.ok(h.events('unproject').every(e=>e.documentId===h.documentId));
   h.window.dispatch('message',{source:child,data:{__websurfEvent:true,event:{...base,documentId:'child-doc',type:'removed'}}});
-  assert.equal(h.events('removed').length,2,'late unload messages cannot revive or double-retire an absent frame');
+  assert.equal(h.events('unproject').length,2,'late unload messages cannot revive or double-retire an absent frame');
 });
 test('iframe src replacement retires the old document and rejects its late observations',()=>{
   const h=harness(),child={},frame=new Element('IFRAME');frame.contentWindow=child;frame.setAttribute('src','https://child.example/old');h.frames.push(frame);h.ack();
-  const event={type:'play',mediaId:'1',documentId:'old-doc',epoch:7,rect:bounds(0,0,100,60),clip:bounds(0,0,100,60),viewportWidth:320,viewportHeight:180};
+  const event={type:'project',mediaId:'1',documentId:'old-doc',epoch:7,rect:bounds(0,0,100,60),clip:bounds(0,0,100,60),viewportWidth:320,viewportHeight:180};
   h.window.dispatch('message',{source:child,data:{__websurfEvent:true,event}});frame.setAttribute('src','https://child.example/new');h.mutation();h.tick(100);
-  assert.equal(h.events('removed')[0].documentId,'old-doc');assert.equal(h.events('removed')[0].reason,'frame-navigated');
-  h.window.dispatch('message',{source:child,data:{__websurfEvent:true,event}});assert.equal(h.events('play').length,1);
-  h.window.dispatch('message',{source:child,data:{__websurfEvent:true,event:{...event,documentId:'new-doc'}}});assert.equal(h.events('play').length,2);
+  assert.equal(h.events('unproject')[0].owner,'old-doc');assert.equal(h.events('unproject')[0].documentId,h.documentId);
+  h.window.dispatch('message',{source:child,data:{__websurfEvent:true,event}});assert.equal(h.events('project').length,1);
+  h.window.dispatch('message',{source:child,data:{__websurfEvent:true,event:{...event,documentId:'new-doc'}}});assert.equal(h.events('project').length,2);
 });
-test('frame commands accept only their direct parent and address one document and media id',()=>{
-  const v=new Media({playing:true}),h=harness({media:[v],childFrame:true});h.ack();const id=h.parentPosts.find(e=>e.event?.type==='media').event.mediaId;
-  const data={__websurfCommand:true,command:{documentId:h.documentId,mediaId:id,action:'attach'}};
-  h.window.dispatch('message',{source:{},data});assert.equal(v.pauseCalls,0);
-  h.window.dispatch('message',{source:h.window.parent,data});assert.equal(v.pauseCalls,1);
+test('only the private native reply reaches a child decoder; metadata stays off postMessage',()=>{
+  const v=new Media({playing:true,url:'https://media.example/clip.mp4?signed=private'}),h=harness({media:[v],childFrame:true});h.ack();
+  const id=h.id(v),command={documentId:h.documentId,mediaId:id,action:'attach',attachment:'probe'};
+  assert.ok(h.events('media')[0].url.includes('private'));
+  const parentTraffic=JSON.stringify(h.parentPosts);
+  assert.ok(!parentTraffic.includes('signed')&&!parentTraffic.includes('page.example')&&!parentTraffic.includes('media.example'));
+  const forged={__websurfCommand:true,command};
+  h.window.dispatch('message',{source:{},data:forged});h.window.dispatch('message',{source:h.window.parent,data:forged});
+  assert.equal(v.pauseCalls,0);
+  h.window.WebSurfObserver.onmessage({data:JSON.stringify({documentId:h.documentId,epoch:7,command})});
+  assert.equal(v.pauseCalls,1);assert.equal(h.events('attached')[0].attachment,'probe');
+  assert.ok(!JSON.stringify(h.parentPosts).includes('probe'));
   const posted=[],frame=new Element('IFRAME');frame.contentWindow={postMessage:data=>posted.push(data)};h.frames.push(frame);
   h.window.__websurf.command({documentId:'grandchild',mediaId:'4',action:'detach',resume:false});
-  assert.equal(posted[0].command.resume,false);assert.equal(posted[0].command.documentId,'grandchild');
+  assert.equal(posted.length,0);
+});
+test('cross-frame projection cannot relay play, attachments, page URLs or a nested media URL',()=>{
+  const h=harness(),child={},frame=new Element('IFRAME');frame.contentWindow=child;h.frames.push(frame);h.ack();
+  const meta={type:'attached',documentId:'victim',mediaId:'1',epoch:7,sourceVersion:1,rect:bounds(0,0,50,50),clip:bounds(0,0,50,50),viewportWidth:100,viewportHeight:100,
+    page:'https://private.example/?token=x',url:'https://private.example/private.mp4',attachment:'private-proof'};
+  h.window.dispatch('message',{source:child,data:{__websurfEvent:true,event:meta}});
+  assert.equal(h.events('attached').length,0);assert.equal(h.events('project').length,0);
+  h.window.dispatch('message',{source:child,data:{__websurfEvent:true,event:{...meta,type:'project'}}});
+  const projected=h.events('project').at(-1);assert.ok(projected);
+  assert.ok(!JSON.stringify(projected).includes('private'));
 });
 test('resource observations keep images, downloads, source variants and changed dimensions',()=>{
   const v=new Media({width:640,height:360}),s=new Element('SOURCE');s.src='https://media.example/high.m3u8';s.type='application/vnd.apple.mpegurl';v.appendChild(s);
@@ -405,6 +525,14 @@ test('scroll geometry is frame-scheduled, coalesced, and carries a stable docume
   assert.equal(moved.topScrollY,260);assert.equal(moved.rect.top,70);
   assert.equal(moved.rect.top+moved.topScrollY+moved.visualOffsetY,first.rect.top);
   assert.ok(moved.layoutRevision>first.layoutRevision);assert.equal(moved.scrollPolicy,'document');
+});
+
+test('the native player uses browser geometry when a page shadows video bounds',()=>{
+  const v=new Media({box:bounds(10,20,320,180)}),h=harness({media:[v]});
+  v.getBoundingClientRect=()=>bounds(0,0,1e300,1e300);
+  h.ack();h.tick(16);
+  const r=h.events('layout').at(-1).rect;
+  assert.deepEqual([r.left,r.top,r.width,r.height],[10,20,320,180]);
 });
 test('contentClip preserves the document video when the viewport has scrolled it fully away',()=>{
   const v=new Media({box:bounds(10,-240,320,180)}),h=harness({media:[v]});h.window.scrollY=500;h.ack();h.tick(16);
@@ -432,12 +560,12 @@ test('visual viewport offsets and scale are explicit rather than folded into top
 });
 test('parent scroll reprojects cached iframe media in the next frame without waiting on a child reply',()=>{
   const h=harness(),child={postMessage(){}},frame=new Element('IFRAME',bounds(20,300,320,180));frame.contentWindow=child;h.frames.push(frame);h.ack();h.tick(16);
-  const input={type:'media',mediaId:'1',documentId:'child',epoch:7,sourceVersion:3,url:'https://child.example/main.mp4',
+  const input={type:'project',mediaId:'1',documentId:'child',epoch:7,sourceVersion:3,url:'https://child.example/main.mp4',
     rect:bounds(0,0,320,180),clip:bounds(0,0,320,180),contentClip:bounds(0,0,320,180),viewportWidth:320,viewportHeight:180,
     topScrollY:900,scrollPolicy:'viewport'};
-  h.window.dispatch('message',{source:child,data:{__websurfEvent:true,event:input}});const before=h.events('media').at(-1);
+  h.window.dispatch('message',{source:child,data:{__websurfEvent:true,event:input}});const before=h.events('project').at(-1);
   h.window.scrollY=400;frame.box=bounds(20,-100,320,180);h.window.dispatch('scroll');h.tick(16);
-  const moved=h.events('layout').at(-1);assert.equal(moved.documentId,'child');assert.equal(moved.sourceVersion,3);
+  const moved=h.events('project').at(-1);assert.equal(moved.owner,'child');assert.equal(moved.sourceVersion,3);
   assert.equal(moved.rect.top,-100);assert.equal(moved.topScrollY,400);assert.equal(moved.scrollPolicy,'document');
   assert.equal(moved.clip.height,80);assert.equal(moved.contentClip.height,180);
   assert.equal(moved.rect.top+moved.topScrollY,before.rect.top);assert.ok(moved.layoutRevision>before.layoutRevision);
@@ -451,6 +579,12 @@ test('the reopen action reserves a separate row after the video without changing
   assert.match(rail.style.cssText,/height:48px!important/);assert.match(button.style.cssText,/height:44px!important/);
   assert.doesNotMatch(rail.style.cssText,/position:(fixed|absolute)/);assert.doesNotMatch(button.style.cssText,/position:(fixed|absolute)/);
   h.command(h.id(v),'attach');assert.equal(rail.isConnected,false);assert.equal(button.isConnected,false);assert.equal(v.nextSibling,next);
+});
+test('late-injection providers keep native selections usable without advertising unsupported page takeover',()=>{
+  const v=new Media(),h=harness({media:[v],documentStart:false});h.ack();
+  h.gesture(v);v.play();assert.equal(h.events('input').length,0);
+  assert.ok(h.command(h.id(v),'attach'));assert.ok(h.command(h.id(v),'detach',{resume:false}));
+  assert.equal(h.document.body.querySelectorAll('button').length,0);
 });
 test('an absolutely positioned video gets its action after the player wrapper instead of inside its clipped viewport',()=>{
   const v=new Media({playing:true}),wrapper=new Element('DIV',bounds(10,30,320,180));
@@ -476,10 +610,10 @@ test('webpage action uses system colors by default and follows explicit applicat
 test('application theme broadcasts to present and newly observed frame sessions',()=>{
   const h=harness(),posts=[],child={postMessage:data=>posts.push(data)},frame=new Element('IFRAME');frame.contentWindow=child;h.frames.push(frame);h.ack();
   h.window.__websurf.command({action:'theme',dark:true});assert.equal(posts.at(-1).command.dark,true);
-  h.window.dispatch('message',{source:child,data:{__websurfEvent:true,event:{type:'media',mediaId:'1',documentId:'new-child',epoch:7,
+  h.window.dispatch('message',{source:child,data:{__websurfEvent:true,event:{type:'project',mediaId:'1',documentId:'new-child',epoch:7,
     rect:bounds(0,0,100,60),clip:bounds(0,0,100,60),viewportWidth:320,viewportHeight:180}}});
   assert.equal(posts.filter(p=>p.command?.action==='theme').length,2);
-  const v=new Media({playing:true}),nested=harness({media:[v],childFrame:true});nested.ack();const id=nested.parentPosts.find(p=>p.event?.type==='media').event.mediaId;
+  const v=new Media({playing:true}),nested=harness({media:[v],childFrame:true});nested.ack();const id=nested.id(v);
   nested.command(id,'attach');nested.command(id,'detach',{resume:false});
   nested.window.dispatch('message',{source:nested.window.parent,data:{__websurfCommand:true,command:{action:'theme',dark:true}}});
   assert.equal(nested.document.body.querySelectorAll('button')[0].getAttribute('data-websurf-theme'),'dark');

@@ -5,12 +5,11 @@ import static org.junit.Assert.*;
 import android.accessibilityservice.AccessibilityServiceInfo;
 import android.app.UiAutomation;
 import android.content.Context;
-import android.content.Intent;
 import android.content.res.Configuration;
 import android.graphics.Rect;
-import android.net.Uri;
 import android.os.Bundle;
 import android.os.SystemClock;
+import android.view.InputDevice;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewConfiguration;
@@ -32,7 +31,7 @@ import java.util.function.Function;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
-/** Real screen input against native controls; no synthetic controller callbacks. */
+/** Exercises the player's native controls through the focused activity's touch dispatch. */
 @RunWith(AndroidJUnit4.class)
 @androidx.annotation.OptIn(markerClass = androidx.media3.common.util.UnstableApi.class)
 public final class VideoControlsTest {
@@ -43,9 +42,8 @@ public final class VideoControlsTest {
   public void nativeControlsRespectPauseLockTemporarySpeedAndSeek() throws Exception {
     Context context = ApplicationProvider.getApplicationContext();
     scenario =
-        ActivityScenario.launch(
-            new Intent(context, MainActivity.class)
-                .setData(Uri.parse("http://127.0.0.1:8765/?native-controls=" + System.nanoTime())));
+        FixtureHttp.launchHomepage(
+            context, "http://127.0.0.1:8765/?native-controls=" + System.nanoTime());
     try {
       await(
           "Fixture media target missing",
@@ -64,6 +62,11 @@ public final class VideoControlsTest {
                     .findFirst()
                     .orElseThrow();
             a.openTarget(a.current, target, true);
+            return null;
+          });
+      await("Takeover did not attach", 10000, () -> ui(a -> a.player != null));
+      ui(
+          a -> {
             // Freeze the short fixture while Android rotates; begin interaction only after layout.
             a.player.pause();
             a.setPlayerMode(VideoChrome.Mode.FULLSCREEN);
@@ -564,9 +567,31 @@ public final class VideoControlsTest {
   }
 
   private void pointer(long down, int action, float x, float y) {
-    MotionEvent event = MotionEvent.obtain(down, SystemClock.uptimeMillis(), action, x, y, 0);
     try {
-      InstrumentationRegistry.getInstrumentation().sendPointerSync(event);
+      boolean handled =
+          ui(
+              activity -> {
+                View decor = activity.getWindow().getDecorView();
+                int[] origin = new int[2];
+                decor.getLocationOnScreen(origin);
+                float windowX = x - origin[0], windowY = y - origin[1];
+                if (!activity.hasWindowFocus() || !decor.hasWindowFocus() || !decor.isShown()
+                    || windowX < 0 || windowX >= decor.getWidth()
+                    || windowY < 0 || windowY >= decor.getHeight())
+                  throw new IllegalStateException("Touch point is outside the focused app window");
+                // Some OEM gesture overlays reject system injection at the edge of fullscreen.
+                // Dispatch the entire gesture through the activity so the window hit-tests it.
+                MotionEvent event =
+                    MotionEvent.obtain(down, SystemClock.uptimeMillis(), action, x, y, 0);
+                try {
+                  event.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+                  event.offsetLocation(-origin[0], -origin[1]);
+                  return activity.dispatchTouchEvent(event);
+                } finally {
+                  event.recycle();
+                }
+              });
+      if (!handled) throw new IllegalStateException("App window did not handle touch");
     } catch (RuntimeException failure) {
       String evidence =
           "action="
@@ -591,8 +616,6 @@ public final class VideoControlsTest {
       InstrumentationRegistry.getInstrumentation().sendStatus(2, status);
       failure.addSuppressed(new IllegalStateException(evidence));
       throw failure;
-    } finally {
-      event.recycle();
     }
   }
 
@@ -648,8 +671,11 @@ public final class VideoControlsTest {
   }
 
   private static View findDescription(View view, String description) {
-    if (description.contentEquals(
-        view.getContentDescription() == null ? "" : view.getContentDescription())) return view;
+    // Media3's hidden controls can share the localized labels of WebSurf's visible buttons.
+    if (!view.isShown()) return null;
+    CharSequence label = view.getContentDescription();
+    if (label != null && description.contentEquals(label) && view.getGlobalVisibleRect(new Rect()))
+      return view;
     if (view instanceof ViewGroup) {
       ViewGroup group = (ViewGroup) view;
       for (int i = 0; i < group.getChildCount(); i++) {
